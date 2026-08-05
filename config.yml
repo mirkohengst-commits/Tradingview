@@ -1,0 +1,77 @@
+# Signalstation Watcher — Konfiguration
+# Bearbeite diese Datei direkt hier auf GitHub (Stift-Symbol oben rechts an der Datei),
+# committe die Änderung — der nächste Lauf nutzt automatisch die neuen Werte.
+#
+# ---------------------------------------------------------------------------
+# signal_watch: true  -> volle Technik-Engine (dieselbe Methodik wie die App:
+#   Wilder-RSI, MACD, Bollinger, relative Stärke vs. Bitcoin/S&P 500, Volumen).
+#   Meldet automatisch "Einstieg sinnvoll", sobald der Score auf ≥65 steigt, und
+#   "Ausstieg sinnvoll", sobald er wieder unter 40 fällt — jeweils nur EINMAL pro
+#   Übergang, kein Dauerfeuer.
+#
+# already_holding: true -> für Assets, die du schon "hältst" (wie dein AMAT-Test) —
+#   startet direkt im Zustand "wartet auf Ausstiegssignal", ohne erst ein neues
+#   Einstiegssignal abzuwarten.
+#
+# Zusätzlich weiterhin verfügbar: einfache Preis-/Prozent-Schwellenwerte, unabhängig
+# von signal_watch, falls du zusätzlich eine harte Marke im Auge behalten willst.
+#   alert_above / alert_below / alert_change_24h_above / alert_change_24h_below
+# Leer lassen (null) = jeweils deaktiviert.
+# ---------------------------------------------------------------------------
+
+crypto:
+  - id: bitcoin
+    symbol: BTC
+    signal_watch: true    # jetzt moeglich: Bitcoin bewertet sich nicht mehr trivial gegen sich selbst,
+                           # sondern nutzt eine auf die anderen vier Faktoren umverteilte Gewichtung
+    already_holding: false
+    alert_above: null
+    alert_below: null
+    alert_change_24h_above: null
+    alert_change_24h_below: null
+
+  - id: litecoin          # CoinGecko-ID (siehe coingecko.com, in der URL der Coin-Seite)
+    symbol: LTC
+    signal_watch: true
+    already_holding: false
+    alert_above: null
+    alert_below: null
+    alert_change_24h_above: null
+    alert_change_24h_below: null
+
+  - id: polkadot
+    symbol: DOT
+    signal_watch: true
+    already_holding: false
+    alert_above: null
+    alert_below: null
+    alert_change_24h_above: null
+    alert_change_24h_below: null
+
+  - id: chainlink
+    symbol: LINK
+    signal_watch: true
+    already_holding: false
+    alert_above: null
+    alert_below: null
+    alert_change_24h_above: null
+    alert_change_24h_below: null
+
+  - id: polygon-ecosystem-token
+    symbol: POL
+    signal_watch: true
+    already_holding: false
+    alert_above: null
+    alert_below: null
+    alert_change_24h_above: null
+    alert_change_24h_below: null
+
+stocks:
+  - symbol: AMAT           # Yahoo-Finance-Ticker
+    name: Applied Materials
+    signal_watch: true
+    already_holding: true   # Probeversuch lief bereits am 05.08.2026 zu $547,14
+    alert_above: null
+    alert_below: null
+    alert_change_24h_above: null
+    alert_change_24h_below: null
