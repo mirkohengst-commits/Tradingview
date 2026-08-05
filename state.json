@@ -1,1 +1,14 @@
-{}
+{
+  "crypto:bitcoin": {
+    "signal_position": "none"
+  },
+  "crypto:chainlink": {},
+  "crypto:litecoin": {
+    "signal_position": "none"
+  },
+  "crypto:polkadot": {},
+  "crypto:polygon-ecosystem-token": {},
+  "stock:AMAT": {
+    "signal_position": "none"
+  }
+}
