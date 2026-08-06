@@ -23,6 +23,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Backtest ausführen (dauert je nach Universum-Größe mehrere Minuten)
+        env:
+          VS_CURRENCY: eur
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}   # kostenloser Demo-Key, siehe README
         run: python backtest.py
 
       - name: Faktor-Analyse ausführen (Hinton/LeCun-Korrelationscheck, kein ML-Modell)
