@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from watcher import (  # noqa: E402
     compute_conviction, fetch_crypto_history, fetch_stock_history, fetch_stock_fundamentals,
     fmt_price, GEMINI_API_KEY, GEMINI_MODEL, VS_CURRENCY, STOCK_LOOKBACK_PERIODS,
-    STOCK_WEEKLY_STRIDE, NTFY_URL, send_push,
+    STOCK_WEEKLY_STRIDE, NTFY_URL, send_push, coingecko_params,
 )
 
 CONFIG_FILE = Path(__file__).parent / "config.yml"
@@ -104,10 +104,10 @@ def crypto_prefilter_score(coin, btc_chg30d):
 
 def fetch_crypto_universe(size):
     url = f"https://api.coingecko.com/api/v3/coins/markets"
-    params = {
+    params = coingecko_params({
         "vs_currency": VS_CURRENCY, "order": "market_cap_desc", "per_page": size, "page": 1,
         "price_change_percentage": "24h,7d,30d", "sparkline": "false",
-    }
+    })
     try:
         resp = requests.get(url, params=params, timeout=25)
         resp.raise_for_status()
