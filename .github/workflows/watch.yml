@@ -29,6 +29,7 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           VS_CURRENCY: eur
+          COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}   # kostenloser Demo-Key, siehe README
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # optional -- leer lassen, wenn nicht genutzt
           GEMINI_MODEL: gemini-3.5-flash                  # bei Bedarf hier zentral anpassen
         run: python watcher.py
