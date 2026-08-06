@@ -2,23 +2,25 @@ name: Signalstation Watcher
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
-  workflow_dispatch:
+    # Alle 30 Minuten. GitHub garantiert keine exakte Sekunde — bei hoher Auslastung
+    # kann sich ein Lauf um ein paar Minuten verschieben, das ist normal und kein Fehler.
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}   # manueller "Run workflow"-Knopf zum Testen
 
 permissions:
-  contents: write
+  contents: write   # nötig, damit der Bot state.json zurückcommitten darf
 
 jobs:
   watch:
     runs-on: ubuntu-latest
     steps:
-      - name: Repository auschecken
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Python einrichten
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.12"
 
       - name: Abhängigkeiten installieren
         run: pip install -r requirements.txt
@@ -26,12 +28,19 @@ jobs:
       - name: Watcher ausführen
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VS_CURRENCY: eur
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # optional -- leer lassen, wenn nicht genutzt
+          GEMINI_MODEL: gemini-3.5-flash                  # bei Bedarf hier zentral anpassen
         run: python watcher.py
 
-      - name: Status (state.json) speichern
+      - name: state.json zurückcommitten (nur falls geändert)
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add state.json
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Status Update" && git push)
+          git config user.name "signalstation-watcher-bot"
+          git config user.email "actions@users.noreply.github.com"
+          if ! git diff --quiet -- state.json; then
+            git add state.json
+            git commit -m "state update [skip ci]"
+            git push
+          else
+            echo "Keine Änderung an state.json, kein Commit nötig."
+          fi
