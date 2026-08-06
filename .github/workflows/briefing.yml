@@ -1,0 +1,48 @@
+name: Signalstation Briefing
+
+on:
+  schedule:
+    # 06:00 und 15:00 UTC ≈ 08:00 und 17:00 MESZ (Sommerzeit) -- bei Bedarf anpassen.
+    # Läuft laenger als der Watcher (59 Aktien + bis zu 12 Krypto-Kandidaten mit voller
+    # Historie) -- deshalb bewusst nur 2x taeglich, nicht alle 30 Minuten.
+    - cron: "0 6 * * *"
+    - cron: "0 15 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Abhängigkeiten installieren
+        run: pip install -r requirements.txt
+
+      - name: Briefing erstellen (dauert mehrere Minuten -- 59 Aktien + Krypto-Scan)
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          VS_CURRENCY: eur
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # optional -- ohne Key nur Kennzahlen, kein Fließtext
+          GEMINI_MODEL: gemini-3.5-flash
+        run: python briefing.py
+
+      - name: BRIEFING.md committen (nur falls geändert)
+        run: |
+          git config user.name "signalstation-briefing-bot"
+          git config user.email "actions@users.noreply.github.com"
+          if ! git diff --quiet -- BRIEFING.md briefing.json; then
+            git add BRIEFING.md briefing.json
+            git commit -m "briefing $(date -u +%Y-%m-%d\ %H:%M) [skip ci]"
+            git push
+          else
+            echo "Keine Änderung, kein Commit."
+          fi
