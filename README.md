@@ -10,6 +10,28 @@ Kursschwellen. Zwei Push-Nachrichten, um die es dir geht:
 Beides feuert nur **einmal pro Übergang**, nicht bei jedem Lauf erneut — kein Dauerfeuer,
 solange ein Zustand anhält. Läuft komplett unabhängig davon, ob dein Handy an ist.
 
+## Wichtig: CoinGecko-API-Key jetzt erforderlich
+
+CoinGecko hat den komplett schlüssellosen Zugriff stark gedrosselt — bei längeren
+Historienabfragen (z. B. im Backtest) kommt sonst `401 Unauthorized`, genau das, was
+den ersten Testlauf blockiert hat. Der kostenlose **Demo-Plan** behebt das (100
+Anfragen/Min., 10.000/Monat, ein Jahr Historie — kein Zahlungsmittel nötig):
+
+1. [coingecko.com/en/api/pricing](https://www.coingecko.com/en/api/pricing) → **"Create Free Account"**
+2. Registrieren/einloggen → **Developer Dashboard** → Reiter **"API Keys"**
+3. **"+ Add New Key"** → Key kopieren
+4. Repo → **Settings → Secrets and variables → Actions → "New repository secret"**
+5. Name: `COINGECKO_API_KEY`, Value: dein Key → **"Add secret"**
+
+Der Key ist im Code technisch optional (kein Absturz ohne ihn), aber praktisch ohne
+ihn kaum noch zuverlässig nutzbar — bitte einrichten, bevor du die Workflows erneut
+startest.
+
+**Zusätzlich wichtig:** Der Demo-Plan liefert laut CoinGecko nur ein Jahr Historie —
+`backtest.py` fragt deshalb `MAX_HISTORY_DAYS = 365` ab, nicht mehr (war vorher 1000,
+das wäre selbst mit gültigem Key fehlgeschlagen — zwei getrennte Probleme, die im
+ersten Lauf zusammen aufgetreten wären).
+
 ## Einrichtung (alles vom iPhone aus machbar)
 
 ### 1. Neues **privates** Repository anlegen
@@ -155,6 +177,33 @@ Struktur zu finden — eine einfache Korrelation ist hier die ehrlichere, nicht 
 bequemere Wahl. Unter 30 Trades gibt das Skript explizit "zu wenig Daten" aus, statt eine
 Zahl mit falscher Präzision zu liefern. **Das Skript ändert nie automatisch Gewichte** —
 es liefert eine Diagnose zum Lesen, keine Kalibrierung.
+
+## Briefing statt stiller Alarme (2× täglich)
+
+`briefing.py` durchsucht zweimal täglich (06:00 und 15:00 UTC, in `briefing.yml`
+anpassbar) alle Titel aus `briefing_stocks` in `config.yml` (~60 sektorübergreifende
+Aktien, selbst erweiterbar — einfach eine Zeile ergänzen) plus die Top-100 Kryptowerte
+nach Marktkapitalisierung. Jeder Kandidat mit Score ≥ 65 bekommt eine Begründung, wenn
+`GEMINI_API_KEY` gesetzt ist — sonst nur die nackten Kennzahlen, funktioniert aber auch
+so vollständig.
+
+**Wichtig, damit klar ist, was hier passiert:** Der Score selbst kommt weiterhin
+ausschließlich aus der deterministischen Engine (`compute_conviction`) — exakt dieselbe
+wie in Watcher, App und Backtest. Gemini bekommt diese fertige Zahl plus RSI, Trendphase,
+Wochentrend und (bei Aktien) Fundamentaldaten und schreibt dazu 3–4 Sätze, warum das
+interessant ist, inklusive mindestens einem konkreten Risiko — es erfindet nichts, es
+erklärt nur, was bereits berechnet wurde. Der Prompt verbietet dem Modell explizit,
+zusätzliche Fakten, Kursziele oder eine Kaufaufforderung zu formulieren.
+
+Ergebnis landet in `BRIEFING.md` im Repo, eine kurze Push-Zusammenfassung kommt zusätzlich
+über ntfy. "Wirklich jede Aktie" ist technisch nicht möglich — es gibt weltweit
+zehntausende — aber die Liste in `config.yml` ist absichtlich dort und nicht im Code,
+damit du sie beliebig erweitern kannst.
+
+**Ehrliche Einschränkung:** Ein voller Lauf braucht mehrere Minuten (~60 Aktien-Abrufe
+plus bis zu 12 tiefe Krypto-Analysen) — deshalb zweimal täglich statt alle 30 Minuten.
+Für einzelne, schnelle Alarme auf bereits bekannte Titel bleibt der normale Watcher
+(`watcher.py` + `watch.yml`) die bessere Wahl; beide laufen unabhängig nebeneinander.
 
 ## Bitcoin ist jetzt vollwertig Teil der Analyse
 
