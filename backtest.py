@@ -402,6 +402,20 @@ def main():
         json.dumps(all_trades, indent=2), encoding="utf-8"
     )
 
+    # Kompakte Zusammenfassung fuer die App (Track-Record-Anzeige) -- siehe Elon-Review:
+    # ein oeffentlich pruefbarer Trackrecord direkt in der App statt versteckt in einem Repo.
+    summary_json = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "universe_size": len(CRYPTO_UNIVERSE),
+        "max_history_days": MAX_HISTORY_DAYS,
+        "engine": engine_summary if engine_summary.get("n", 0) > 0 else None,
+        "baseline_random": baseline_summary,
+        "avg_buy_and_hold": statistics.mean(buy_hold_returns) if buy_hold_returns else None,
+    }
+    (Path(__file__).parent / "backtest_summary.json").write_text(
+        json.dumps(summary_json, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
     print(f"\nFertig. Report geschrieben nach {out_path}")
     print(report)
 
