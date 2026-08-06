@@ -75,3 +75,81 @@ stocks:
     alert_below: null
     alert_change_24h_above: null
     alert_change_24h_below: null
+
+# ---------------------------------------------------------------------------
+# Briefing (siehe briefing.py): durchsucht diese Liste + eine breite Krypto-Auswahl
+# zweimal täglich nach den stärksten Kaufsignalen und schreibt eine Begründung dazu.
+# "Wirklich jede Aktie" ist technisch nicht möglich (zehntausende weltweit) -- aber
+# diese Liste ist absichtlich hier in der Config, nicht im Code, damit du sie beliebig
+# erweitern kannst: einfach eine Zeile mit "- SYMBOL" ergänzen und committen.
+# ~65 liquide, sektorübergreifende US-Titel als Startpunkt.
+# ---------------------------------------------------------------------------
+briefing_stocks:
+  # Technologie
+  - AAPL
+  - MSFT
+  - GOOGL
+  - AMZN
+  - NVDA
+  - META
+  - AMD
+  - AVGO
+  - ORCL
+  - ADBE
+  - CRM
+  - QCOM
+  - INTC
+  - CSCO
+  - IBM
+  - PLTR
+  - AMAT
+  - LRCX
+  # Gesundheit
+  - JNJ
+  - UNH
+  - LLY
+  - PFE
+  - ABBV
+  - MRK
+  - TMO
+  - ABT
+  - DHR
+  # Energie
+  - XOM
+  - CVX
+  - COP
+  - SLB
+  # Industrie
+  - CAT
+  - HON
+  - GE
+  - BA
+  - UPS
+  - LMT
+  - RTX
+  # Finanzen
+  - JPM
+  - BAC
+  - WFC
+  - GS
+  - MS
+  - V
+  - MA
+  - PYPL
+  # Konsum
+  - PG
+  - KO
+  - PEP
+  - WMT
+  - HD
+  - NKE
+  - MCD
+  - SBUX
+  - DIS
+  - COST
+  # Sonstiges
+  - TSLA
+  - LIN
+  - NEM
+
+briefing_crypto_scan_size: 100   # Top-N nach Marktkapitalisierung, die für das Briefing durchsucht werden
