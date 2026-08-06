@@ -29,6 +29,21 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
 NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}" if NTFY_TOPIC else None
 VS_CURRENCY = os.environ.get("VS_CURRENCY", "eur")
 
+# CoinGecko verlangt inzwischen fuer zuverlaessigen Zugriff einen kostenlosen "Demo"-API-Key
+# (https://www.coingecko.com/en/api/pricing -> "Create Free Account" -> Developer Dashboard ->
+# API Keys -> "+ Add New Key", kein Zahlungsmittel noetig). Ohne Key: stark gedrosselt, laut
+# CoinGecko selbst nur fuer "quick prototyping" gedacht -- kann bei laengeren Historienabfragen
+# mit 401 Unauthorized fehlschlagen (genau das, was den ersten Backtest-Lauf blockiert hat).
+# Mit Key: 100 Anfragen/Min, 10.000/Monat, ein Jahr taegliche Historie.
+COINGECKO_API_KEY = os.environ.get("COINGECKO_API_KEY", "").strip()
+
+def coingecko_params(extra):
+    """Haengt den Demo-Key als Query-Parameter an, falls gesetzt -- sonst unveraendert."""
+    p = dict(extra)
+    if COINGECKO_API_KEY:
+        p["x_cg_demo_api_key"] = COINGECKO_API_KEY
+    return p
+
 # Optional: qualitativer Nachrichtenkontext via Gemini, rein ergaenzend zur Push-Nachricht.
 # Fliesst NIEMALS in den deterministischen Score zurueck (siehe fetch_gemini_context) --
 # bewusste Architekturentscheidung: Sprachmodelle sind gut in Sprache/Kontext, nicht darin,
@@ -407,7 +422,7 @@ def compute_conviction(closes, volumes, price, chg24h, benchmark_closes, lookbac
 
 def fetch_crypto_history(coin_id, vs_currency=VS_CURRENCY, days=HISTORY_DAYS, retries=1):
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-    params = {"vs_currency": vs_currency, "days": days, "interval": "daily"}
+    params = coingecko_params({"vs_currency": vs_currency, "days": days, "interval": "daily"})
     for attempt in range(retries + 1):
         try:
             resp = requests.get(url, params=params, timeout=25)
@@ -428,7 +443,7 @@ def fetch_crypto_simple(ids, vs_currency=VS_CURRENCY):
     if not ids:
         return {}
     url = "https://api.coingecko.com/api/v3/simple/price"
-    params = {"ids": ",".join(ids), "vs_currencies": vs_currency, "include_24hr_change": "true"}
+    params = coingecko_params({"ids": ",".join(ids), "vs_currencies": vs_currency, "include_24hr_change": "true"})
     try:
         resp = requests.get(url, params=params, timeout=20)
         resp.raise_for_status()
