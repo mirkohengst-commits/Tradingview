@@ -32,6 +32,10 @@ CONFIG_FILE = Path(__file__).parent / "config.yml"
 BRIEFING_MIN_SCORE = 65          # identisch zur Kaufsignal-Schwelle -- ein Briefing zeigt nur echte Kandidaten
 BRIEFING_MAX_RESULTS = 8         # Obergrenze fuer die Gesamtliste
 BRIEFING_MAX_NARRATIVES = 6      # Gemini wird nur fuer die staerksten N aufgerufen (Kosten/Kontingent)
+STOCK_FOCUS_COUNT = 3            # garantierte Sichtbarkeit: die staerksten N Aktien werden immer
+                                  # gezeigt, auch unterhalb der Kaufsignal-Schwelle -- Aktien schwanken
+                                  # strukturell weniger als Krypto und wuerden sonst in einem
+                                  # gemischten Ranking fast immer untergehen
 CRYPTO_SHORTLIST_SIZE = 12       # wie viele Krypto-Kandidaten nach dem Vorfilter tief analysiert werden
 
 DISCOVERY_EXCLUDE = {
@@ -170,7 +174,13 @@ def generate_narrative(symbol, name, metrics, fundamentals=None):
 # ===================== ORCHESTRIERUNG =====================
 
 def scan_stocks(symbols):
-    candidates = []
+    """Gibt ALLE bewerteten Aktien zurueck, nicht nur die mit Score >= Schwelle --
+    main() leitet daraus sowohl die echten Kandidaten als auch eine garantierte
+    'Aktien im Fokus'-Sektion ab (siehe dort). Aktien schwanken strukturell weniger
+    als Krypto, daher ueberschreiten sie seltener die 65er-Schwelle, obwohl sie
+    fundamental relevant sein koennen -- ohne Garantie-Sektion wuerden sie in einem
+    gemischten Krypto/Aktien-Ranking fast immer untergehen."""
+    all_stocks = []
     for idx, symbol in enumerate(symbols):
         print(f"[Aktie {idx+1}/{len(symbols)}] {symbol} ...")
         closes, volumes, price, chg24h = fetch_stock_history(symbol)
@@ -182,11 +192,10 @@ def scan_stocks(symbols):
                                       lookback_periods=STOCK_LOOKBACK_PERIODS,
                                       weekly_stride=STOCK_WEEKLY_STRIDE)
         print(f"  Score={metrics['conviction']} ({metrics['label']})")
-        if metrics["conviction"] >= BRIEFING_MIN_SCORE:
-            candidates.append({"symbol": symbol, "name": symbol, "kind": "Aktie",
-                                "price": price, "metrics": metrics})
+        all_stocks.append({"symbol": symbol, "name": symbol, "kind": "Aktie",
+                            "price": price, "metrics": metrics})
         time.sleep(1.0)
-    return candidates
+    return all_stocks
 
 
 def scan_crypto(scan_size):
@@ -234,7 +243,13 @@ def main():
 
     print(f"Durchsuche {len(stock_symbols)} Aktien und Top-{crypto_scan_size} Krypto nach Marktkapitalisierung.\n")
 
-    stock_candidates = scan_stocks(stock_symbols)
+    all_stocks = scan_stocks(stock_symbols)
+    stock_candidates = [c for c in all_stocks if c["metrics"]["conviction"] >= BRIEFING_MIN_SCORE]
+    stock_focus = sorted(all_stocks, key=lambda c: c["metrics"]["conviction"], reverse=True)[:STOCK_FOCUS_COUNT]
+    # bereits qualifizierende Aktien nicht doppelt in der Fokus-Sektion zeigen -- die stehen
+    # schon prominent in der Hauptliste
+    stock_focus_only = [c for c in stock_focus if c["metrics"]["conviction"] < BRIEFING_MIN_SCORE]
+
     crypto_candidates = scan_crypto(crypto_scan_size)
     all_candidates = sorted(stock_candidates + crypto_candidates,
                              key=lambda c: c["metrics"]["conviction"], reverse=True)
@@ -276,6 +291,31 @@ def main():
                 "fundamentals": fundamentals, "narrative": narrative,
             })
 
+    # Garantierte Sichtbarkeit fuer Aktien, unabhaengig von der 65er-Schwelle -- siehe
+    # STOCK_FOCUS_COUNT oben. Kein Kaufsignal, nur "das ist aktuell am staerksten unter
+    # den beobachteten Aktien", klar als solches benannt, keine Verwaesserung von
+    # "Kaufsignal" als Begriff.
+    json_stock_focus = []
+    if stock_focus_only:
+        lines.append("\n## Aktien im Fokus (unabhängig von der Kaufsignal-Schwelle)\n")
+        lines.append(
+            f"Aktien schwanken strukturell weniger als Krypto und überschreiten die "
+            f"{BRIEFING_MIN_SCORE}er-Schwelle seltener — diese {len(stock_focus_only)} "
+            f"waren aktuell die stärksten unter den {len(stock_symbols)} beobachteten, "
+            f"auch wenn (noch) kein Kaufsignal vorliegt.\n"
+        )
+        for c in stock_focus_only:
+            m = c["metrics"]
+            fundamentals = fetch_stock_fundamentals(c["symbol"])
+            lines.append(f"- **{c['symbol']}** — Score {m['conviction']}/100, {m['label']} · "
+                         f"{fmt_price(c['price'], '$')} · {m['phase']}"
+                         + (f" · RSI {m['rsi']:.0f}" if m.get("rsi") is not None else ""))
+            json_stock_focus.append({
+                "symbol": c["symbol"], "name": c["name"], "price": c["price"], "currency": "$",
+                "conviction": m["conviction"], "label": m["label"], "cls": m["cls"],
+                "rsi": m.get("rsi"), "phase": m.get("phase"), "fundamentals": fundamentals,
+            })
+
     lines.append(
         "\n---\nKeine Anlageberatung. Alle Angaben basieren auf dem regelbasierten "
         "Signalstation-Score plus optionalem, ausdrücklich als solchem markiertem "
@@ -290,18 +330,26 @@ def main():
         "universe_size": {"stocks": len(stock_symbols), "crypto_scanned": crypto_scan_size},
         "min_score": BRIEFING_MIN_SCORE,
         "candidates": json_candidates,
+        "stock_focus": json_stock_focus,  # garantierte Aktien-Sichtbarkeit, siehe oben
     }
     (Path(__file__).parent / "briefing.json").write_text(
         json.dumps(briefing_json, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    if top:
-        summary = " · ".join(f"{c['symbol']} ({c['metrics']['conviction']})" for c in top)
+    if top or stock_focus_only:
+        parts = []
+        if top:
+            parts.append(" · ".join(f"{c['symbol']} ({c['metrics']['conviction']})" for c in top))
+        if stock_focus_only:
+            focus_txt = " · ".join(f"{c['symbol']} ({c['metrics']['conviction']})" for c in stock_focus_only)
+            parts.append(f"📈 Aktien im Fokus: {focus_txt}")
+        summary = "\n".join(parts)
         send_push(f"📋 Briefing: {len(top)} Kandidat(en)", summary, priority="default", tags=["clipboard"])
     else:
         print("Kein Kandidat über der Schwelle -- kein Push versendet, um nicht grundlos zu stören.")
 
-    print(f"\nBRIEFING.md + briefing.json geschrieben mit {len(top)} Kandidat(en).")
+    print(f"\nBRIEFING.md + briefing.json geschrieben mit {len(top)} Kandidat(en) "
+          f"+ {len(stock_focus_only)} Aktien im Fokus.")
 
 
 if __name__ == "__main__":
