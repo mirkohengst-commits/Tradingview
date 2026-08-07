@@ -2,12 +2,18 @@
   "crypto:bitcoin": {
     "signal_position": "none"
   },
-  "crypto:chainlink": {},
+  "crypto:chainlink": {
+    "signal_position": "none"
+  },
   "crypto:litecoin": {
     "signal_position": "none"
   },
-  "crypto:polkadot": {},
-  "crypto:polygon-ecosystem-token": {},
+  "crypto:polkadot": {
+    "signal_position": "none"
+  },
+  "crypto:polygon-ecosystem-token": {
+    "signal_position": "none"
+  },
   "stock:AMAT": {
     "signal_position": "none"
   }
