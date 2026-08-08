@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-08T10:29:02Z",
+  "generated_at": "2026-08-08T10:46:31Z",
   "universe_size": 69,
   "max_history_days": 3650,
   "engine": {
@@ -29,6 +29,20 @@
     "avg_max_drawdown": -29.533043959591634,
     "worst_max_drawdown": -82.51243171862163,
     "return_to_risk": 0.37146012790181615
+  },
+  "trend_following": {
+    "label": "Trendfolge-Alternative (kein RSI/Mean-Reversion)",
+    "n": 44,
+    "win_rate": 29.545454545454547,
+    "avg_return": 47.90193026226767,
+    "median_return": -7.821365827423355,
+    "best": 1148.8849553406474,
+    "worst": -70.34475555145936,
+    "stdev": 211.69906731939056,
+    "avg_holding_days": 38.38636363636363,
+    "avg_max_drawdown": -31.413829828469428,
+    "worst_max_drawdown": -82.51243171862163,
+    "return_to_risk": 0.22627369533942246
   },
   "baseline_random": {
     "n": 59,

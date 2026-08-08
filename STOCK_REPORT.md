@@ -27,6 +27,21 @@ Dieselbe Hypothese wie im Krypto-Backtest, hier mit SPY als Referenzmarkt: neue 
 **Effekt des Filters auf die Ø Rendite: +0.0 Prozentpunkte.**
  Half in diesem Lauf NICHT.
 
+## Experiment: Trendfolge statt Mean-Reversion
+
+Direkte Antwort auf die Beobachtung, dass die Haupt-Engine Qualitäts-Compounder wie AAPL, MSFT, JNJ so gut wie nie kauft, weil sie selten "überverkauft" genug werden. Diese Alternative kauft in einem bereits bestätigten, gesunden Aufwärtstrend (Kurs > SMA50 > SMA100, nicht überhitzt) und verkauft, wenn der Trend bricht — kein RSI, kein Bollinger-Band, keine Mean-Reversion-Komponente. Klassische Trendfolge-Logik.
+
+| | Haupt-Engine (Mean-Reversion) | Trendfolge-Alternative |
+|---|---|---|
+| Trades | 61 | 44 |
+| Trefferquote | 52.5% | 29.5% |
+| Ø Rendite | +48.4% | +47.9% |
+| Median-Rendite | +6.3% | -7.8% |
+| Ø Drawdown | -29.5% | -31.4% |
+| Rendite-Risiko-Verh. | 0.37 | 0.23 |
+
+**Trendfolge-Vorsprung ggü. Zufalls-Baseline: -13.5 Prozentpunkte.**
+
 ## Vergleich: zufällige Einstiegszeitpunkte (Baseline)
 
 - Zufalls-Trades: **59**
