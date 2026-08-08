@@ -16,6 +16,21 @@ Universum: 22 Coins · Historie bis 1000 Tage (Binance, wo gelistet) bzw. 365 Ta
 - **Rendite-Risiko-Verhältnis (Ø Rendite / Streuung): -0.95**
   Grobe Orientierung, kein echter Sharpe-Ratio (dafür fehlt ein risikofreier Zins und eine gleichmäßige Zeitbasis) — aber besser als die Durchschnittsrendite allein zu lesen, ohne zu wissen, wie stark sie streut.
 
+## Experiment: Markt-Regime-Filter
+
+Hypothese, unabhängig von diesen Testdaten hergeleitet (kein Overfitting-Risiko wie bei einer Gewichts-Neujustierung): Diese Engine ist im Kern ein Mean-Reversion-System — sie kauft "überverkauft" und wettet auf Erholung. Das funktioniert strukturell schlecht in einem anhaltenden Gesamtmarkt-Abwärtstrend. Der Filter unterdrückt neue Einstiege, solange Bitcoin selbst unter SMA50 unter SMA100 steht — Ausstiege bleiben unberührt.
+
+| | Ohne Filter | Mit Regime-Filter |
+|---|---|---|
+| Trades | 46 | 35 |
+| Trefferquote | 10.9% | 5.7% |
+| Ø Rendite | -13.6% | -15.2% |
+| Ø Drawdown | -19.5% | -20.0% |
+| Rendite-Risiko-Verh. | -0.95 | -1.14 |
+
+**Effekt des Filters auf die Ø Rendite: -1.6 Prozentpunkte.**
+ Der Filter half in diesem Lauf NICHT — die Hypothese wäre damit für diesen Zeitraum widerlegt, nicht bestätigt. Ehrlich berichten, nicht schönreden.
+
 ## Vergleich: zufällige Einstiegszeitpunkte (Baseline)
 
 Dieselbe Anzahl Trades pro Coin, dieselbe Haltedauer-Verteilung wie oben, aber zufällig statt signalbasiert gewählte Einstiege. Schlägt die Engine den Zufall überhaupt?
@@ -41,19 +56,19 @@ Dieselbe Anzahl Trades pro Coin, dieselbe Haltedauer-Verteilung wie oben, aber z
 | chainlink | 1 | -39.6% |
 | stellar | 3 | -34.5% |
 | dogecoin | 1 | -53.0% |
-| monero | 2 | -11.6% |
-| tron | 2 | +13.8% |
-| eos | 1 | -64.3% |
-| tezos | 1 | -63.1% |
+| monero | 2 | -11.7% |
+| tron | 2 | +13.9% |
+| eos | 1 | -64.6% |
+| tezos | 1 | -62.9% |
 | cosmos | 3 | -40.6% |
 | vechain | 2 | -62.2% |
 | algorand | 7 | -36.7% |
-| aave | 1 | -46.7% |
-| uniswap | 1 | -34.4% |
+| aave | 1 | -46.6% |
+| uniswap | 1 | -34.5% |
 | maker | 4 | -16.0% |
 | the-graph | 2 | -64.8% |
 | solana | 4 | -45.0% |
-| avalanche-2 | 2 | -54.2% |
+| avalanche-2 | 2 | -54.1% |
 
 Ø Buy-and-Hold über alle Coins: **-42.6%**
 
@@ -67,26 +82,26 @@ Direkter Test der Bitcoin-Maximalisten-These ("Altcoins bluten strukturell gegen
 
 | Coin | Buy-and-Hold | Bitcoin im selben Fenster | Alt schlägt BTC? |
 |---|---|---|---|
-| tron | +13.8% | -28.1% | ✅ ja |
-| monero | -11.6% | -28.1% | ✅ ja |
+| tron | +13.9% | -28.1% | ✅ ja |
+| monero | -11.7% | -28.1% | ✅ ja |
 | maker | -16.0% | -28.1% | ✅ ja |
-| uniswap | -34.4% | -28.1% | ❌ nein |
 | stellar | -34.5% | -28.1% | ❌ nein |
+| uniswap | -34.5% | -28.1% | ❌ nein |
 | algorand | -36.7% | -28.1% | ❌ nein |
 | chainlink | -39.6% | -28.1% | ❌ nein |
 | ethereum | -39.7% | -28.1% | ❌ nein |
 | cosmos | -40.6% | -28.1% | ❌ nein |
 | litecoin | -44.7% | -28.1% | ❌ nein |
 | solana | -45.0% | -28.1% | ❌ nein |
-| aave | -46.7% | -28.1% | ❌ nein |
+| aave | -46.6% | -28.1% | ❌ nein |
 | cardano | -52.2% | -28.1% | ❌ nein |
 | dogecoin | -53.0% | -28.1% | ❌ nein |
-| avalanche-2 | -54.2% | -28.1% | ❌ nein |
+| avalanche-2 | -54.1% | -28.1% | ❌ nein |
 | ripple | -55.4% | -28.1% | ❌ nein |
 | vechain | -62.2% | -28.1% | ❌ nein |
 | polkadot | -62.5% | -28.1% | ❌ nein |
-| tezos | -63.1% | -28.1% | ❌ nein |
-| eos | -64.3% | -28.1% | ❌ nein |
+| tezos | -62.9% | -28.1% | ❌ nein |
+| eos | -64.6% | -28.1% | ❌ nein |
 | the-graph | -64.8% | -28.1% | ❌ nein |
 
 

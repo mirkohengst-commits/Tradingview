@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-08T09:46:12Z",
+  "generated_at": "2026-08-08T10:00:53Z",
   "universe_size": 22,
   "max_history_days": 365,
   "engine": {
@@ -16,11 +16,25 @@
     "worst_max_drawdown": -59.3022913803003,
     "return_to_risk": -0.9511318111504004
   },
+  "regime_filtered": {
+    "label": "Signalstation-Engine + Markt-Regime-Filter",
+    "n": 35,
+    "win_rate": 5.714285714285714,
+    "avg_return": -15.176743088214854,
+    "median_return": -10.416831318253006,
+    "best": 8.056616986707654,
+    "worst": -43.5913229270561,
+    "stdev": 13.291291047655543,
+    "avg_holding_days": 20.65714285714286,
+    "avg_max_drawdown": -19.99964153854197,
+    "worst_max_drawdown": -59.3022913803003,
+    "return_to_risk": -1.1418561999582342
+  },
   "baseline_random": {
     "n": 46,
     "win_rate": 47.82608695652174,
     "avg_return": -2.4402096825779798,
     "median_return": -2.2126150342086257
   },
-  "avg_buy_and_hold": -42.60807812246332
+  "avg_buy_and_hold": -42.607228121086344
 }
