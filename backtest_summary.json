@@ -1,26 +1,26 @@
 {
-  "generated_at": "2026-08-07T10:59:46Z",
+  "generated_at": "2026-08-08T09:46:12Z",
   "universe_size": 22,
   "max_history_days": 365,
   "engine": {
     "label": "Signalstation-Engine (echte Einstieg/Ausstieg-Signale)",
-    "n": 37,
-    "win_rate": 10.81081081081081,
-    "avg_return": -12.130766176890521,
-    "median_return": -9.48848689380134,
-    "best": 10.885482347681897,
-    "worst": -41.4487609299974,
-    "stdev": 12.367244703556777,
-    "avg_holding_days": 24.56756756756757,
-    "avg_max_drawdown": -19.392149100674022,
+    "n": 46,
+    "win_rate": 10.869565217391305,
+    "avg_return": -13.550260234880605,
+    "median_return": -10.474675334280997,
+    "best": 14.39650236293013,
+    "worst": -43.5913229270561,
+    "stdev": 14.246458877756885,
+    "avg_holding_days": 22.043478260869566,
+    "avg_max_drawdown": -19.452997270937818,
     "worst_max_drawdown": -59.3022913803003,
-    "return_to_risk": -0.9808786409313753
+    "return_to_risk": -0.9511318111504004
   },
   "baseline_random": {
-    "n": 37,
-    "win_rate": 45.94594594594595,
-    "avg_return": -3.4052172846602966,
-    "median_return": -1.2840705287898713
+    "n": 46,
+    "win_rate": 47.82608695652174,
+    "avg_return": -2.4402096825779798,
+    "median_return": -2.2126150342086257
   },
-  "avg_buy_and_hold": -41.0748845175522
+  "avg_buy_and_hold": -42.60807812246332
 }
