@@ -28,7 +28,11 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 from watcher import (  # noqa: E402  -- bewusste Wiederverwendung der validierten Engine
-    ENTRY_SCORE, EXIT_SCORE, compute_conviction, compute_sma, VS_CURRENCY, coingecko_params,
+    VS_CURRENCY, coingecko_params,
+)
+from simulation_core import (  # noqa: E402  -- gemeinsamer Kern, auch von stock_backtest.py genutzt
+    WARMUP_DAYS, EVAL_STRIDE, max_drawdown_pct, benchmark_bearish_regime, simulate_asset,
+    random_baseline, summarize, buy_and_hold_return, matched_benchmark_return,
 )
 
 # Etablierte Coins mit mehrjaehriger Historie -- bewusst keine sehr neuen Token, sonst
@@ -43,9 +47,6 @@ CRYPTO_UNIVERSE = [
 # historical data" -- 365 ist der sichere Rueckfall-Wert fuer Coins, die nicht bei
 # Binance gelistet sind (siehe BINANCE_SYMBOL_MAP unten fuer die Haupt-Historienquelle).
 MAX_HISTORY_DAYS = 365
-WARMUP_DAYS = 150         # Mindesthistorie, bevor die volle Engine ueberhaupt bewertet wird
-EVAL_STRIDE = 3           # nur jeden 3. Tag auswerten -- Signale aendern sich nicht stuendlich,
-                           # spart ~3x Rechenzeit ohne die Aussagekraft nennenswert zu verringern
 RANDOM_SEED = 42          # fuer reproduzierbare Baseline-Vergleiche
 
 # Binances oeffentliche Klines-API: komplett schluessellos, liefert fuer die meisten
@@ -120,182 +121,6 @@ def fetch_full_history(coin_id, days=MAX_HISTORY_DAYS, retries=2):
             return [], []
 
 
-def max_drawdown_pct(price_path):
-    """Größter Rückgang vom bisherigen Höchststand innerhalb einer Preisreihe, in Prozent
-    (negativ oder 0). Nutzt die tatsächlichen Tagesschlusskurse zwischen Einstieg und
-    Ausstieg -- nicht nur die EVAL_STRIDE-Stichprobenpunkte -- damit ein Rücksetzer
-    zwischen zwei Auswertungstagen nicht unsichtbar bleibt. Ohne das würde ein Trade mit
-    +20% Endrendite genauso aussehen wie einer, der unterwegs -50% durchgemacht hat,
-    bevor er sich erholte -- ein entscheidender Unterschied für jeden, der die Position
-    tatsächlich hätte halten müssen."""
-    if not price_path:
-        return 0.0
-    peak = price_path[0]
-    worst = 0.0
-    for p in price_path:
-        if p > peak:
-            peak = p
-        dd = (p - peak) / peak * 100
-        if dd < worst:
-            worst = dd
-    return worst
-
-
-def btc_bearish_regime(btc_closes_window):
-    """Markt-Regime-Filter: True, wenn Bitcoin selbst in einem bestaetigten starken
-    Abwaertstrend steckt (Kurs < SMA50 < SMA100). Diese Engine ist im Kern ein Mean-
-    Reversion-System (kauft "ueberverkauft", wettet auf Erholung) -- das funktioniert
-    strukturell schlecht, wenn der Gesamtmarkt in einem anhaltenden Abwaertstrend steckt,
-    weil "ueberverkauft" dort oft nicht "Boden" bedeutet, sondern nur "noch nicht ganz
-    unten". Bewusst unabhaengig vom einzelnen Coin-Score, unabhaengig von diesem
-    speziellen Backtest-Datensatz kalibriert (keine Overfitting-Gefahr wie bei einer
-    Gewichts-Neujustierung anhand derselben Trades)."""
-    sma50 = compute_sma(btc_closes_window, 50)
-    sma100 = compute_sma(btc_closes_window, 100)
-    if sma50 is None or sma100 is None:
-        return False  # zu wenig Historie -> Filter greift konservativ nicht ein
-    price = btc_closes_window[-1]
-    return price < sma50 < sma100
-
-
-def simulate_coin(coin_id, closes, volumes, benchmark_closes, use_regime_filter=False, btc_closes=None):
-    """Läuft Tag für Tag (im EVAL_STRIDE-Raster) durch die Historie, wendet dieselbe
-    Einstieg/Ausstieg-Zustandsmaschine wie check_signal() in watcher.py an, und
-    protokolliert jeden abgeschlossenen Trade. Streng point-in-time: closes[:i+1].
-
-    use_regime_filter=True: unterdrueckt NEUE Einstiege, solange Bitcoin selbst im
-    Abwaertstrend steckt (siehe btc_bearish_regime) -- Ausstiege bleiben davon unberuehrt,
-    die sollen weiterhin jederzeit greifen koennen. btc_closes muss übergeben werden,
-    wenn der Filter aktiv ist (fuer Bitcoin selbst ist das identisch zu 'closes')."""
-    trades = []
-    position = None  # None oder {"entry_idx","entry_price"}
-    n = len(closes)
-    is_self_benchmark = (coin_id == "bitcoin")  # siehe compute_conviction: BTC braucht sich nicht selbst als Benchmark-Faktor
-    btc_ref = btc_closes if btc_closes is not None else closes
-
-    for i in range(WARMUP_DAYS, n, EVAL_STRIDE):
-        window_closes = closes[: i + 1]
-        window_volumes = volumes[: i + 1] if volumes else []
-        window_bench = benchmark_closes[: i + 1] if benchmark_closes else []
-        price = closes[i]
-        chg24h = ((closes[i] / closes[i - 1]) - 1) * 100 if i > 0 else None
-
-        metrics = compute_conviction(window_closes, window_volumes, price, chg24h, window_bench,
-                                      is_self_benchmark=is_self_benchmark)
-        score = metrics["conviction"]
-
-        regime_blocks_entry = False
-        if use_regime_filter and i < len(btc_ref):
-            regime_blocks_entry = btc_bearish_regime(btc_ref[: i + 1])
-
-        if position is None and score >= ENTRY_SCORE and not regime_blocks_entry:
-            position = {
-                "entry_idx": i, "entry_price": price,
-                # Teilwerte beim Einstieg -- fuer analyze_backtest.py (Korrelationsanalyse,
-                # welcher Faktor tatsaechlich mit dem Ergebnis zusammenhaengt)
-                "entry_t": metrics["t"], "entry_m": metrics["m"], "entry_v": metrics["v"],
-                "entry_r": metrics["r"], "entry_vo": metrics["vo"],
-            }
-        elif position is not None and score < EXIT_SCORE:
-            trades.append({
-                "coin": coin_id,
-                "entry_idx": position["entry_idx"], "entry_price": position["entry_price"],
-                "exit_idx": i, "exit_price": price,
-                "return_pct": (price / position["entry_price"] - 1) * 100,
-                "holding_days": i - position["entry_idx"],
-                "closed_at_end": False,
-                "entry_t": position["entry_t"], "entry_m": position["entry_m"],
-                "entry_v": position["entry_v"], "entry_r": position["entry_r"],
-                "entry_vo": position["entry_vo"],
-                "max_drawdown_pct": max_drawdown_pct(closes[position["entry_idx"]: i + 1]),
-            })
-            position = None
-
-    # offene Position am Ende der Historie sauber abschliessen, aber separat markiert --
-    # zaehlt nicht in die "echte" Trefferquote, weil kein echtes Ausstiegssignal vorlag.
-    if position is not None:
-        trades.append({
-            "coin": coin_id,
-            "entry_idx": position["entry_idx"], "entry_price": position["entry_price"],
-            "exit_idx": n - 1, "exit_price": closes[-1],
-            "return_pct": (closes[-1] / position["entry_price"] - 1) * 100,
-            "holding_days": (n - 1) - position["entry_idx"],
-            "closed_at_end": True,
-            "entry_t": position["entry_t"], "entry_m": position["entry_m"],
-            "entry_v": position["entry_v"], "entry_r": position["entry_r"],
-            "entry_vo": position["entry_vo"],
-            "max_drawdown_pct": max_drawdown_pct(closes[position["entry_idx"]:]),
-        })
-
-    return trades
-
-
-def random_baseline(closes, n_entries, holding_days_pool, rng):
-    """Fairer Vergleichsmassstab: dieselbe Anzahl Trades, dieselbe Verteilung der
-    Haltedauer, aber zufaellige statt signalbasierte Einstiegszeitpunkte. Schlaegt die
-    Engine das, oder haette man genauso gut wuerfeln koennen?"""
-    if not closes or n_entries == 0:
-        return []
-    n = len(closes)
-    results = []
-    for _ in range(n_entries):
-        hold = rng.choice(holding_days_pool) if holding_days_pool else 30
-        max_start = n - hold - 1
-        if max_start <= WARMUP_DAYS:
-            continue
-        start = rng.randint(WARMUP_DAYS, max_start)
-        end = start + hold
-        results.append((closes[end] / closes[start] - 1) * 100)
-    return results
-
-
-def summarize(trades, label):
-    closed = [t for t in trades if not t["closed_at_end"]]
-    returns = [t["return_pct"] for t in closed]
-    wins = [r for r in returns if r > 0]
-    holding = [t["holding_days"] for t in closed]
-    drawdowns = [t["max_drawdown_pct"] for t in closed if t.get("max_drawdown_pct") is not None]
-
-    if not returns:
-        return {"label": label, "n": 0}
-
-    stdev = statistics.stdev(returns) if len(returns) > 1 else 0
-    avg_return = statistics.mean(returns)
-
-    return {
-        "label": label,
-        "n": len(returns),
-        "win_rate": (len(wins) / len(returns)) * 100,
-        "avg_return": avg_return,
-        "median_return": statistics.median(returns),
-        "best": max(returns),
-        "worst": min(returns),
-        "stdev": stdev,
-        "avg_holding_days": statistics.mean(holding) if holding else 0,
-        # Risiko-Kennzahlen (Damodaran-Review): eine Endrendite allein sagt nichts darüber,
-        # wie holprig der Weg dorthin war, und nichts über Rendite im Verhältnis zum Risiko.
-        "avg_max_drawdown": statistics.mean(drawdowns) if drawdowns else None,
-        "worst_max_drawdown": min(drawdowns) if drawdowns else None,
-        "return_to_risk": (avg_return / stdev) if stdev > 0 else None,
-    }
-
-
-def buy_and_hold_return(closes):
-    if len(closes) < 2:
-        return None
-    return (closes[-1] / closes[WARMUP_DAYS] - 1) * 100 if len(closes) > WARMUP_DAYS else None
-
-
-def btc_matched_return(btc_closes, coin_closes):
-    """Bitcoins Buy-and-Hold-Rendite ueber DIESELBE ANZAHL Perioden wie der Coin, ausgerichtet
-    vom jeweils letzten (aktuellsten) Datenpunkt beider Reihen aus -- fuer einen fairen
-    'Alt vs. BTC im selben Fenster'-Vergleich, auch wenn Coins unterschiedlich lange
-    Historie bei CoinGecko haben."""
-    span = len(coin_closes) - WARMUP_DAYS
-    if span <= 0 or len(btc_closes) <= span:
-        return None
-    return (btc_closes[-1] / btc_closes[-(span + 1)] - 1) * 100
-
 
 def main():
     print(f"Backtest ueber {len(CRYPTO_UNIVERSE)} Coins, bis zu {MAX_HISTORY_DAYS_BINANCE} Tage Historie "
@@ -326,18 +151,20 @@ def main():
             continue
 
         bench = btc_closes if coin_id != "bitcoin" else closes  # BTC braucht sich nicht selbst als Benchmark
-        trades = simulate_coin(coin_id, closes, volumes, bench)
+        is_self = (coin_id == "bitcoin")
+        trades = simulate_asset(coin_id, closes, volumes, bench, is_self_benchmark=is_self)
         all_trades.extend(trades)
         # zweite Simulation, exakt dieselben Kursdaten, nur mit Regime-Filter an --
         # direkter Vergleich, kein zusaetzlicher Netzabruf
-        rtrades = simulate_coin(coin_id, closes, volumes, bench, use_regime_filter=True, btc_closes=btc_closes)
+        rtrades = simulate_asset(coin_id, closes, volumes, bench, is_self_benchmark=is_self,
+                                  use_regime_filter=True, regime_benchmark_closes=btc_closes)
         regime_trades.extend(rtrades)
         closes_by_coin[coin_id] = closes
 
         bh = buy_and_hold_return(closes)
         if bh is not None:
             buy_hold_returns.append(bh)
-        btc_matched = btc_matched_return(btc_closes, closes) if coin_id != "bitcoin" else None
+        btc_matched = matched_benchmark_return(btc_closes, closes) if coin_id != "bitcoin" else None
         beats_btc = (bh is not None and btc_matched is not None and bh > btc_matched)
 
         closed = [t for t in trades if not t["closed_at_end"]]
