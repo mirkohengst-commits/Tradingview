@@ -28,7 +28,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).parent))
 from watcher import (  # noqa: E402  -- bewusste Wiederverwendung der validierten Engine
-    ENTRY_SCORE, EXIT_SCORE, compute_conviction, VS_CURRENCY, coingecko_params,
+    ENTRY_SCORE, EXIT_SCORE, compute_conviction, compute_sma, VS_CURRENCY, coingecko_params,
 )
 
 # Etablierte Coins mit mehrjaehriger Historie -- bewusst keine sehr neuen Token, sonst
@@ -141,14 +141,37 @@ def max_drawdown_pct(price_path):
     return worst
 
 
-def simulate_coin(coin_id, closes, volumes, benchmark_closes):
+def btc_bearish_regime(btc_closes_window):
+    """Markt-Regime-Filter: True, wenn Bitcoin selbst in einem bestaetigten starken
+    Abwaertstrend steckt (Kurs < SMA50 < SMA100). Diese Engine ist im Kern ein Mean-
+    Reversion-System (kauft "ueberverkauft", wettet auf Erholung) -- das funktioniert
+    strukturell schlecht, wenn der Gesamtmarkt in einem anhaltenden Abwaertstrend steckt,
+    weil "ueberverkauft" dort oft nicht "Boden" bedeutet, sondern nur "noch nicht ganz
+    unten". Bewusst unabhaengig vom einzelnen Coin-Score, unabhaengig von diesem
+    speziellen Backtest-Datensatz kalibriert (keine Overfitting-Gefahr wie bei einer
+    Gewichts-Neujustierung anhand derselben Trades)."""
+    sma50 = compute_sma(btc_closes_window, 50)
+    sma100 = compute_sma(btc_closes_window, 100)
+    if sma50 is None or sma100 is None:
+        return False  # zu wenig Historie -> Filter greift konservativ nicht ein
+    price = btc_closes_window[-1]
+    return price < sma50 < sma100
+
+
+def simulate_coin(coin_id, closes, volumes, benchmark_closes, use_regime_filter=False, btc_closes=None):
     """Läuft Tag für Tag (im EVAL_STRIDE-Raster) durch die Historie, wendet dieselbe
     Einstieg/Ausstieg-Zustandsmaschine wie check_signal() in watcher.py an, und
-    protokolliert jeden abgeschlossenen Trade. Streng point-in-time: closes[:i+1]."""
+    protokolliert jeden abgeschlossenen Trade. Streng point-in-time: closes[:i+1].
+
+    use_regime_filter=True: unterdrueckt NEUE Einstiege, solange Bitcoin selbst im
+    Abwaertstrend steckt (siehe btc_bearish_regime) -- Ausstiege bleiben davon unberuehrt,
+    die sollen weiterhin jederzeit greifen koennen. btc_closes muss übergeben werden,
+    wenn der Filter aktiv ist (fuer Bitcoin selbst ist das identisch zu 'closes')."""
     trades = []
     position = None  # None oder {"entry_idx","entry_price"}
     n = len(closes)
     is_self_benchmark = (coin_id == "bitcoin")  # siehe compute_conviction: BTC braucht sich nicht selbst als Benchmark-Faktor
+    btc_ref = btc_closes if btc_closes is not None else closes
 
     for i in range(WARMUP_DAYS, n, EVAL_STRIDE):
         window_closes = closes[: i + 1]
@@ -161,7 +184,11 @@ def simulate_coin(coin_id, closes, volumes, benchmark_closes):
                                       is_self_benchmark=is_self_benchmark)
         score = metrics["conviction"]
 
-        if position is None and score >= ENTRY_SCORE:
+        regime_blocks_entry = False
+        if use_regime_filter and i < len(btc_ref):
+            regime_blocks_entry = btc_bearish_regime(btc_ref[: i + 1])
+
+        if position is None and score >= ENTRY_SCORE and not regime_blocks_entry:
             position = {
                 "entry_idx": i, "entry_price": price,
                 # Teilwerte beim Einstieg -- fuer analyze_backtest.py (Korrelationsanalyse,
@@ -285,6 +312,7 @@ def main():
     time.sleep(1.5)
 
     all_trades = []
+    regime_trades = []  # zweite Simulation mit Markt-Regime-Filter, gleiche Daten, kein Mehraufwand beim Abruf
     buy_hold_returns = []
     per_coin_results = []
     closes_by_coin = {}   # fuer die Zufalls-Baseline weiterverwendet, kein erneuter Netzabruf noetig
@@ -300,6 +328,10 @@ def main():
         bench = btc_closes if coin_id != "bitcoin" else closes  # BTC braucht sich nicht selbst als Benchmark
         trades = simulate_coin(coin_id, closes, volumes, bench)
         all_trades.extend(trades)
+        # zweite Simulation, exakt dieselben Kursdaten, nur mit Regime-Filter an --
+        # direkter Vergleich, kein zusaetzlicher Netzabruf
+        rtrades = simulate_coin(coin_id, closes, volumes, bench, use_regime_filter=True, btc_closes=btc_closes)
+        regime_trades.extend(rtrades)
         closes_by_coin[coin_id] = closes
 
         bh = buy_and_hold_return(closes)
@@ -319,6 +351,7 @@ def main():
         time.sleep(1.5)  # CoinGecko-Rate-Limit schonen
 
     engine_summary = summarize(all_trades, "Signalstation-Engine (echte Einstieg/Ausstieg-Signale)")
+    regime_summary = summarize(regime_trades, "Signalstation-Engine + Markt-Regime-Filter")
 
     # Zufalls-Baseline: gleiche Anzahl Trades PRO COIN wie die Engine tatsaechlich gemacht hat,
     # gleiche Haltedauer-Verteilung, aber zufaellige statt signalbasierte Einstiegszeitpunkte --
@@ -380,6 +413,32 @@ def main():
                 "eine gleichmäßige Zeitbasis) — aber besser als die Durchschnittsrendite allein zu lesen, "
                 "ohne zu wissen, wie stark sie streut."
             )
+        report_lines.append("")
+
+    report_lines.append("## Experiment: Markt-Regime-Filter\n")
+    report_lines.append(
+        "Hypothese, unabhängig von diesen Testdaten hergeleitet (kein Overfitting-Risiko wie bei "
+        "einer Gewichts-Neujustierung): Diese Engine ist im Kern ein Mean-Reversion-System — sie "
+        "kauft \"überverkauft\" und wettet auf Erholung. Das funktioniert strukturell schlecht in "
+        "einem anhaltenden Gesamtmarkt-Abwärtstrend. Der Filter unterdrückt neue Einstiege, "
+        "solange Bitcoin selbst unter SMA50 unter SMA100 steht — Ausstiege bleiben unberührt.\n"
+    )
+    if regime_summary.get("n", 0) == 0:
+        report_lines.append("Keine abgeschlossenen Trades mit aktivem Filter im Beobachtungszeitraum.\n")
+    else:
+        report_lines.append("| | Ohne Filter | Mit Regime-Filter |")
+        report_lines.append("|---|---|---|")
+        report_lines.append(f"| Trades | {engine_summary.get('n','–')} | {regime_summary.get('n','–')} |")
+        report_lines.append(f"| Trefferquote | {engine_summary.get('win_rate',0):.1f}% | {regime_summary.get('win_rate',0):.1f}% |")
+        report_lines.append(f"| Ø Rendite | {engine_summary.get('avg_return',0):+.1f}% | {regime_summary.get('avg_return',0):+.1f}% |")
+        report_lines.append(f"| Ø Drawdown | {engine_summary.get('avg_max_drawdown',0):.1f}% | {regime_summary.get('avg_max_drawdown',0):.1f}% |")
+        report_lines.append(f"| Rendite-Risiko-Verh. | {engine_summary.get('return_to_risk') or 0:.2f} | {regime_summary.get('return_to_risk') or 0:.2f} |")
+        diff = regime_summary["avg_return"] - engine_summary["avg_return"]
+        report_lines.append(f"\n**Effekt des Filters auf die Ø Rendite: {diff:+.1f} Prozentpunkte.**")
+        if diff > 0:
+            report_lines.append(" Der Filter half in diesem Lauf tatsächlich — trotzdem nur ein Hinweis, kein Beweis, siehe Einschränkungen unten.")
+        else:
+            report_lines.append(" Der Filter half in diesem Lauf NICHT — die Hypothese wäre damit für diesen Zeitraum widerlegt, nicht bestätigt. Ehrlich berichten, nicht schönreden.")
         report_lines.append("")
 
     report_lines.append("## Vergleich: zufällige Einstiegszeitpunkte (Baseline)\n")
@@ -466,6 +525,7 @@ def main():
         "universe_size": len(CRYPTO_UNIVERSE),
         "max_history_days": MAX_HISTORY_DAYS,
         "engine": engine_summary if engine_summary.get("n", 0) > 0 else None,
+        "regime_filtered": regime_summary if regime_summary.get("n", 0) > 0 else None,
         "baseline_random": baseline_summary,
         "avg_buy_and_hold": statistics.mean(buy_hold_returns) if buy_hold_returns else None,
     }
