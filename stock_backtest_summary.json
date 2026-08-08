@@ -1,0 +1,39 @@
+{
+  "generated_at": "2026-08-08T10:29:02Z",
+  "universe_size": 69,
+  "max_history_days": 3650,
+  "engine": {
+    "label": "Signalstation-Engine (Aktien/ETFs)",
+    "n": 61,
+    "win_rate": 52.459016393442624,
+    "avg_return": 48.384570605735384,
+    "median_return": 6.34465500490462,
+    "best": 528.795569489718,
+    "worst": -65.4905656523544,
+    "stdev": 130.2550851932198,
+    "avg_holding_days": 34.08196721311475,
+    "avg_max_drawdown": -29.533043959591634,
+    "worst_max_drawdown": -82.51243171862163,
+    "return_to_risk": 0.37146012790181615
+  },
+  "regime_filtered": {
+    "label": "Signalstation-Engine + Markt-Regime-Filter (SPY)",
+    "n": 61,
+    "win_rate": 52.459016393442624,
+    "avg_return": 48.384570605735384,
+    "median_return": 6.34465500490462,
+    "best": 528.795569489718,
+    "worst": -65.4905656523544,
+    "stdev": 130.2550851932198,
+    "avg_holding_days": 34.08196721311475,
+    "avg_max_drawdown": -29.533043959591634,
+    "worst_max_drawdown": -82.51243171862163,
+    "return_to_risk": 0.37146012790181615
+  },
+  "baseline_random": {
+    "n": 59,
+    "win_rate": 88.13559322033898,
+    "avg_return": 61.43129682924454
+  },
+  "avg_buy_and_hold": 1272.966334617241
+}
