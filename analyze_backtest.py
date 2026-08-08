@@ -118,16 +118,26 @@ def format_report(result):
 
 
 def main():
-    trades_path = Path(__file__).parent / "backtest_trades.json"
+    # Optionales Kommandozeilenargument: "stocks" -> analysiert stock_backtest_trades.json
+    # statt backtest_trades.json (Krypto) -- dieselbe Korrelationslogik, andere Datenquelle.
+    target = sys.argv[1] if len(sys.argv) > 1 else "crypto"
+    if target == "stocks":
+        trades_path = Path(__file__).parent / "stock_backtest_trades.json"
+        out_path = Path(__file__).parent / "STOCK_FACTOR_ANALYSIS.md"
+        missing_msg = "stock_backtest_trades.json nicht gefunden -- zuerst stock_backtest.py laufen lassen."
+    else:
+        trades_path = Path(__file__).parent / "backtest_trades.json"
+        out_path = Path(__file__).parent / "FACTOR_ANALYSIS.md"
+        missing_msg = "backtest_trades.json nicht gefunden -- zuerst backtest.py laufen lassen."
+
     if not trades_path.exists():
-        print("backtest_trades.json nicht gefunden -- zuerst backtest.py laufen lassen.", file=sys.stderr)
+        print(missing_msg, file=sys.stderr)
         sys.exit(1)
 
     trades = json.loads(trades_path.read_text(encoding="utf-8"))
     result = analyze(trades)
     report = format_report(result)
 
-    out_path = Path(__file__).parent / "FACTOR_ANALYSIS.md"
     out_path.write_text(report, encoding="utf-8")
     print(report)
     print(f"\nGeschrieben nach {out_path}")
