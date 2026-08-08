@@ -39,19 +39,69 @@ CRYPTO_UNIVERSE = [
     "algorand", "aave", "uniswap", "maker", "the-graph", "solana", "avalanche-2",
 ]
 
-# 365 Tage, nicht mehr -- CoinGecko dokumentiert fuer den kostenlosen Demo-Plan explizit
-# "one year of daily and hourly historical data". Der urspruengliche Wert von 1000 Tagen
-# haette selbst MIT gueltigem API-Key nicht funktioniert (Datenanfrage jenseits des Demo-
-# Kontingents), nicht nur ohne Key -- zwei getrennte Probleme, siehe auch coingecko_params
-# oben in watcher.py.
+# CoinGecko-Demo-Plan liefert laut CoinGecko explizit "one year of daily and hourly
+# historical data" -- 365 ist der sichere Rueckfall-Wert fuer Coins, die nicht bei
+# Binance gelistet sind (siehe BINANCE_SYMBOL_MAP unten fuer die Haupt-Historienquelle).
 MAX_HISTORY_DAYS = 365
 WARMUP_DAYS = 150         # Mindesthistorie, bevor die volle Engine ueberhaupt bewertet wird
 EVAL_STRIDE = 3           # nur jeden 3. Tag auswerten -- Signale aendern sich nicht stuendlich,
                            # spart ~3x Rechenzeit ohne die Aussagekraft nennenswert zu verringern
 RANDOM_SEED = 42          # fuer reproduzierbare Baseline-Vergleiche
 
+# Binances oeffentliche Klines-API: komplett schluessellos, liefert fuer die meisten
+# grossen Coins mehrere Jahre taegliche Historie -- im Gegensatz zum CoinGecko-Demo-Plan,
+# der nur ein Jahr hergibt. Deckt aber nur Coins ab, die bei Binance gegen USDT gelistet
+# sind, deshalb als ERGAENZUNG eingebaut, nicht als Ersatz: wo verfuegbar, mehr Historie;
+# sonst automatischer Ruckfall auf CoinGecko (weiterhin auf MAX_HISTORY_DAYS begrenzt).
+#
+# Technischer Hinweis: Binance quotiert in USDT, nicht EUR. Fuer RSI/MACD/Bollinger und
+# Rendite in Prozent ist das praktisch ohne Belang -- das sind relative Kennzahlen, und
+# die EUR/USD-Wechselkursschwankung faellt gegenueber der krypto-eigenen Volatilitaet
+# kaum ins Gewicht.
+BINANCE_SYMBOL_MAP = {
+    "bitcoin": "BTCUSDT", "ethereum": "ETHUSDT", "litecoin": "LTCUSDT",
+    "ripple": "XRPUSDT", "cardano": "ADAUSDT", "polkadot": "DOTUSDT",
+    "chainlink": "LINKUSDT", "stellar": "XLMUSDT", "dogecoin": "DOGEUSDT",
+    "monero": "XMRUSDT", "tron": "TRXUSDT", "eos": "EOSUSDT",
+    "tezos": "XTZUSDT", "cosmos": "ATOMUSDT", "vechain": "VETUSDT",
+    "algorand": "ALGOUSDT", "aave": "AAVEUSDT", "uniswap": "UNIUSDT",
+    "maker": "MKRUSDT", "the-graph": "GRTUSDT", "solana": "SOLUSDT",
+    "avalanche-2": "AVAXUSDT",
+}
+MAX_HISTORY_DAYS_BINANCE = 1000  # Binance liefert bis zu 1000 Kerzen pro Anfrage, keine Paginierung noetig
+
+
+def fetch_binance_history(coin_id, days=MAX_HISTORY_DAYS_BINANCE):
+    """Schluessellos, mehrjaehrige Historie wo verfuegbar. Gibt ([], []) zurueck, wenn der
+    Coin nicht gemappt ist oder die Anfrage fehlschlaegt -- der Aufrufer faellt dann auf
+    CoinGecko zurueck, kein Fehler wird nach aussen weitergereicht."""
+    symbol = BINANCE_SYMBOL_MAP.get(coin_id)
+    if not symbol:
+        return [], []
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": "1d", "limit": min(days, 1000)}
+    try:
+        resp = requests.get(url, params=params, timeout=25)
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list) or not data:
+            return [], []
+        # Kline-Format: [open_time, open, high, low, close, volume, close_time, ...]
+        closes = [float(k[4]) for k in data]
+        volumes = [float(k[5]) for k in data]
+        return closes, volumes
+    except (requests.RequestException, ValueError, IndexError, TypeError) as e:
+        print(f"  Binance-Historie fuer {coin_id} nicht verfuegbar ({e})", file=sys.stderr)
+        return [], []
+
 
 def fetch_full_history(coin_id, days=MAX_HISTORY_DAYS, retries=2):
+    binance_closes, binance_volumes = fetch_binance_history(coin_id)
+    if len(binance_closes) >= WARMUP_DAYS:
+        print(f"  {len(binance_closes)} Tage von Binance geladen")
+        return binance_closes, binance_volumes
+
+    print(f"  nicht auf Binance verfuegbar oder zu wenig Historie -- falle zurueck auf CoinGecko")
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
     params = coingecko_params({"vs_currency": VS_CURRENCY, "days": days, "interval": "daily"})
     for attempt in range(retries + 1):
@@ -221,7 +271,8 @@ def btc_matched_return(btc_closes, coin_closes):
 
 
 def main():
-    print(f"Backtest ueber {len(CRYPTO_UNIVERSE)} Coins, bis zu {MAX_HISTORY_DAYS} Tage Historie, "
+    print(f"Backtest ueber {len(CRYPTO_UNIVERSE)} Coins, bis zu {MAX_HISTORY_DAYS_BINANCE} Tage Historie "
+          f"(Binance, wo gelistet) bzw. {MAX_HISTORY_DAYS} Tage (CoinGecko-Ruckfall), "
           f"Auswertung alle {EVAL_STRIDE} Tage. Das dauert eine Weile.\n")
 
     rng = random.Random(RANDOM_SEED)
@@ -296,7 +347,8 @@ def main():
 
     report_lines = []
     report_lines.append("# Signalstation Backtest-Report\n")
-    report_lines.append(f"Universum: {len(CRYPTO_UNIVERSE)} Coins · Historie bis {MAX_HISTORY_DAYS} Tage · "
+    report_lines.append(f"Universum: {len(CRYPTO_UNIVERSE)} Coins · Historie bis {MAX_HISTORY_DAYS_BINANCE} Tage "
+                         f"(Binance, wo gelistet) bzw. {MAX_HISTORY_DAYS} Tage (CoinGecko-Rückfall) · "
                          f"Auswertungsraster alle {EVAL_STRIDE} Tage · Schwellen 65 (Einstieg) / 40 (Ausstieg)\n")
 
     report_lines.append("## Ergebnis: Signalstation-Engine\n")
