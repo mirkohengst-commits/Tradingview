@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from watcher import STOCK_LOOKBACK_PERIODS, STOCK_WEEKLY_STRIDE  # noqa: E402
 from simulation_core import (  # noqa: E402
     WARMUP_DAYS, EVAL_STRIDE, simulate_asset, random_baseline, summarize,
-    buy_and_hold_return, matched_benchmark_return,
+    buy_and_hold_return, matched_benchmark_return, simulate_trend_following,
 )
 
 CONFIG_FILE = Path(__file__).parent / "config.yml"
@@ -113,6 +113,7 @@ def main():
 
     all_trades = []
     regime_trades = []
+    trend_trades = []  # dritter, unabhaengiger Vergleichsarm: Trendfolge statt Mean-Reversion
     buy_hold_returns = []
     per_symbol_results = []
     closes_by_symbol = {}
@@ -137,6 +138,9 @@ def main():
                                   use_regime_filter=True, regime_benchmark_closes=spy_closes)
         regime_trades.extend(rtrades)
 
+        ttrades = simulate_trend_following(symbol, closes)
+        trend_trades.extend(ttrades)
+
         closes_by_symbol[symbol] = closes
 
         bh = buy_and_hold_return(closes)
@@ -158,6 +162,7 @@ def main():
 
     engine_summary = summarize(all_trades, "Signalstation-Engine (Aktien/ETFs)")
     regime_summary = summarize(regime_trades, "Signalstation-Engine + Markt-Regime-Filter (SPY)")
+    trend_summary = summarize(trend_trades, "Trendfolge-Alternative (kein RSI/Mean-Reversion)")
 
     holding_pool = [t["holding_days"] for t in all_trades if not t["closed_at_end"]] or [30]
     baseline_returns = []
@@ -228,6 +233,30 @@ def main():
         report_lines.append(" Half in diesem Lauf." if diff > 0 else " Half in diesem Lauf NICHT.")
         report_lines.append("")
 
+    report_lines.append("## Experiment: Trendfolge statt Mean-Reversion\n")
+    report_lines.append(
+        "Direkte Antwort auf die Beobachtung, dass die Haupt-Engine Qualitäts-Compounder wie "
+        "AAPL, MSFT, JNJ so gut wie nie kauft, weil sie selten \"überverkauft\" genug werden. "
+        "Diese Alternative kauft in einem bereits bestätigten, gesunden Aufwärtstrend (Kurs > "
+        "SMA50 > SMA100, nicht überhitzt) und verkauft, wenn der Trend bricht — kein RSI, kein "
+        "Bollinger-Band, keine Mean-Reversion-Komponente. Klassische Trendfolge-Logik.\n"
+    )
+    if trend_summary.get("n", 0) == 0:
+        report_lines.append("Keine abgeschlossenen Trades mit dieser Logik im Beobachtungszeitraum.\n")
+    else:
+        report_lines.append("| | Haupt-Engine (Mean-Reversion) | Trendfolge-Alternative |")
+        report_lines.append("|---|---|---|")
+        report_lines.append(f"| Trades | {engine_summary.get('n','–')} | {trend_summary.get('n','–')} |")
+        report_lines.append(f"| Trefferquote | {engine_summary.get('win_rate',0):.1f}% | {trend_summary.get('win_rate',0):.1f}% |")
+        report_lines.append(f"| Ø Rendite | {engine_summary.get('avg_return',0):+.1f}% | {trend_summary.get('avg_return',0):+.1f}% |")
+        report_lines.append(f"| Median-Rendite | {engine_summary.get('median_return',0):+.1f}% | {trend_summary.get('median_return',0):+.1f}% |")
+        report_lines.append(f"| Ø Drawdown | {engine_summary.get('avg_max_drawdown',0):.1f}% | {trend_summary.get('avg_max_drawdown',0):.1f}% |")
+        report_lines.append(f"| Rendite-Risiko-Verh. | {engine_summary.get('return_to_risk') or 0:.2f} | {trend_summary.get('return_to_risk') or 0:.2f} |")
+        if baseline_summary:
+            trend_edge = trend_summary["avg_return"] - baseline_summary["avg_return"]
+            report_lines.append(f"\n**Trendfolge-Vorsprung ggü. Zufalls-Baseline: {trend_edge:+.1f} Prozentpunkte.**")
+        report_lines.append("")
+
     report_lines.append("## Vergleich: zufällige Einstiegszeitpunkte (Baseline)\n")
     if baseline_summary:
         report_lines.append(f"- Zufalls-Trades: **{baseline_summary['n']}**")
@@ -284,6 +313,7 @@ def main():
         "max_history_days": MAX_HISTORY_DAYS,
         "engine": engine_summary if engine_summary.get("n", 0) > 0 else None,
         "regime_filtered": regime_summary if regime_summary.get("n", 0) > 0 else None,
+        "trend_following": trend_summary if trend_summary.get("n", 0) > 0 else None,
         "baseline_random": baseline_summary,
         "avg_buy_and_hold": statistics.mean(buy_hold_returns) if buy_hold_returns else None,
     }
