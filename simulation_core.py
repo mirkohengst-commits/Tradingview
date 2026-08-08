@@ -195,3 +195,97 @@ def matched_benchmark_return(benchmark_closes, asset_closes):
     if span <= 0 or len(benchmark_closes) <= span:
         return None
     return (benchmark_closes[-1] / benchmark_closes[-(span + 1)] - 1) * 100
+
+
+# ===================== TRENDFOLGE-ALTERNATIVE (Buffett-Kritik-Antwort) =====================
+#
+# Der Haupt-Score ist im Kern ein Mean-Reversion-System: er kauft "ueberverkauft" (RSI
+# niedrig, Kurs nahe unterem Bollinger-Band) und wettet auf Erholung. Zwei unabhaengige
+# Backtests (Krypto-Baermarkt, Aktien-Jahrzehnt-Bullenmarkt) zeigen: das System bleibt
+# hinter zufaelligen Einstiegen zurueck, UND es kauft Qualitaets-Compounder wie AAPL,
+# MSFT, JNJ so gut wie nie, weil die selten "ueberverkauft" genug werden -- sie steigen
+# einfach stetig, statt sich staendig zu erholen.
+#
+# Diese Alternative ist bewusst das Gegenteil: Trendfolge statt Mean-Reversion. Kauft,
+# wenn ein Aufwaertstrend bereits bestaetigt UND gesund ist (nicht ueberhitzt), verkauft,
+# wenn der Trend bricht -- unabhaengig von RSI/Bollinger. Klassische, etablierte Logik
+# (kein neues, ungeprueftes Konzept), aber im Signalstation-Kontext ein echter zweiter
+# Signaltyp, kein Nachjustieren derselben Gewichte.
+
+def trend_following_score(closes, extend_limit_pct=15.0):
+    """0-100, hoeher = gesuenderer, bestaetigter Aufwaertstrend. Kein RSI, kein Bollinger,
+    keine Mean-Reversion-Komponente -- rein SMA-basierte Trendbestaetigung.
+
+    extend_limit_pct: wie weit der Kurs maximal ueber dem SMA50 liegen darf, um noch als
+    "gesund" zu gelten (Standard 15%) -- verhindert, in einen bereits stark ueberhitzten,
+    ueberkauften Ausbruch zu kaufen, ohne dafuer RSI zu benoetigen."""
+    sma20 = compute_sma(closes, 20)
+    sma50 = compute_sma(closes, 50)
+    sma100 = compute_sma(closes, 100)
+    if sma50 is None or sma100 is None:
+        return 0
+    price = closes[-1]
+
+    # Basis: ist der Trend ueberhaupt etabliert?
+    if price > sma50 > sma100:
+        base = 2  # voll bestaetigter Aufwaertstrend
+    elif price > sma100:
+        base = 1  # schwaecher, aber noch positiv
+    elif price < sma50 < sma100:
+        base = -2  # bestaetigter Abwaertstrend
+    else:
+        base = -1
+
+    # Ueberhitzungs-Abzug: zu weit ueber SMA50 gelaufen = eher ein spaeter, riskanter
+    # Einstieg als ein gesunder frueher Trend
+    extension_pct = ((price - sma50) / sma50) * 100 if sma50 else 0
+    if extension_pct > extend_limit_pct * 2:
+        base -= 1  # deutlich ueberhitzt
+    elif extension_pct > extend_limit_pct:
+        base -= 0.5  # leicht ueberhitzt
+
+    base = max(-2, min(2, base))
+    return round(((base + 2) / 4) * 100)
+
+
+def simulate_trend_following(asset_id, closes, entry_score=65, exit_score=40):
+    """Eigene, einfachere Zustandsmaschine als simulate_asset() -- bewusst getrennt
+    gehalten, weil dieser Signaltyp konzeptionell etwas anderes ist (Trendfolge statt
+    Mean-Reversion) und nicht denselben 5-Faktoren-Score nutzt. Gleiche Trade-Struktur
+    (entry_idx, exit_idx, return_pct, max_drawdown_pct, ...) fuer direkte Vergleichbarkeit
+    mit simulate_asset() in Reports."""
+    trades = []
+    position = None
+    n = len(closes)
+
+    for i in range(WARMUP_DAYS, n, EVAL_STRIDE):
+        window_closes = closes[: i + 1]
+        price = closes[i]
+        score = trend_following_score(window_closes)
+
+        if position is None and score >= entry_score:
+            position = {"entry_idx": i, "entry_price": price}
+        elif position is not None and score < exit_score:
+            trades.append({
+                "coin": asset_id,
+                "entry_idx": position["entry_idx"], "entry_price": position["entry_price"],
+                "exit_idx": i, "exit_price": price,
+                "return_pct": (price / position["entry_price"] - 1) * 100,
+                "holding_days": i - position["entry_idx"],
+                "closed_at_end": False,
+                "max_drawdown_pct": max_drawdown_pct(closes[position["entry_idx"]: i + 1]),
+            })
+            position = None
+
+    if position is not None:
+        trades.append({
+            "coin": asset_id,
+            "entry_idx": position["entry_idx"], "entry_price": position["entry_price"],
+            "exit_idx": n - 1, "exit_price": closes[-1],
+            "return_pct": (closes[-1] / position["entry_price"] - 1) * 100,
+            "holding_days": (n - 1) - position["entry_idx"],
+            "closed_at_end": True,
+            "max_drawdown_pct": max_drawdown_pct(closes[position["entry_idx"]:]),
+        })
+
+    return trades
