@@ -1,355 +1,480 @@
 #!/usr/bin/env python3
 """
-Signalstation Briefing -- läuft zweimal täglich, durchsucht eine breite Aktien- und
-Krypto-Auswahl und schreibt eine lesbare Begründung zu den stärksten Kandidaten.
+Signalstation Backtest — prueft die 65/40-Kaufsignal/Meiden-Schwellen und die
+Faktorgewichtung (25/20/15/25/15%) tatsaechlich gegen echte Mehrjahres-Kurshistorie,
+statt sie nur zu vermuten. Direkte Antwort auf den Warren-Buffett-Kritikpunkt:
+"vier Backtests sind statistisch bedeutungslos, woher kommen 65/40 ueberhaupt?"
 
-Architekturprinzip (siehe watcher.py, Gemini-Kontext): die Zahl bleibt deterministisch.
-compute_conviction() entscheidet, WAS ein Kandidat ist. Gemini bekommt diese fertige
-Zahl plus RSI/Trend/Fundamentaldaten und erklärt sie in Worten -- es erfindet nichts
-Neues, es interpretiert nur, was bereits berechnet wurde. Ohne GEMINI_API_KEY läuft
-alles trotzdem, nur ohne die Prosa-Begründung (reine Kennzahlen statt Fließtext).
+Wiederverwendet die EXAKT GLEICHEN Scoring-Funktionen wie watcher.py (und damit
+dieselben wie die JS-Engine der App) -- kein drittes, potenziell abweichendes
+Nachbauen der Logik.
 
-Wiederverwendet ausschließlich Funktionen aus watcher.py -- kein drittes Nachbauen der
-Engine.
+Streng Point-in-Time: an jedem Auswertungstag i wird compute_conviction() nur mit
+closes[:i+1] aufgerufen -- der Algorithmus kann nicht in die Zukunft schauen. Das ist
+der Kern eines seriösen Backtests; ohne das waere jedes Ergebnis wertlos (Lookahead-Bias).
+
+Ausgabe: REPORT.md mit Trefferquote, Rendite, Vergleich gegen Buy-and-Hold und gegen
+zufaellige Einstiegszeitpunkte (Baseline -- schlaegt die Engine den Zufall ueberhaupt?).
 """
 
 import json
+import random
+import statistics
 import sys
 import time
 from pathlib import Path
 
 import requests
-import yaml
 
 sys.path.insert(0, str(Path(__file__).parent))
-from watcher import (  # noqa: E402
-    compute_conviction, fetch_crypto_history, fetch_stock_history, fetch_stock_fundamentals,
-    fmt_price, GEMINI_API_KEY, GEMINI_MODEL, VS_CURRENCY, STOCK_LOOKBACK_PERIODS,
-    STOCK_WEEKLY_STRIDE, NTFY_URL, send_push, coingecko_params,
+from watcher import (  # noqa: E402  -- bewusste Wiederverwendung der validierten Engine
+    ENTRY_SCORE, EXIT_SCORE, compute_conviction, VS_CURRENCY, coingecko_params,
 )
 
-CONFIG_FILE = Path(__file__).parent / "config.yml"
-BRIEFING_MIN_SCORE = 65          # identisch zur Kaufsignal-Schwelle -- ein Briefing zeigt nur echte Kandidaten
-BRIEFING_MAX_RESULTS = 8         # Obergrenze fuer die Gesamtliste
-BRIEFING_MAX_NARRATIVES = 6      # Gemini wird nur fuer die staerksten N aufgerufen (Kosten/Kontingent)
-STOCK_FOCUS_COUNT = 3            # garantierte Sichtbarkeit: die staerksten N Aktien werden immer
-                                  # gezeigt, auch unterhalb der Kaufsignal-Schwelle -- Aktien schwanken
-                                  # strukturell weniger als Krypto und wuerden sonst in einem
-                                  # gemischten Ranking fast immer untergehen
-CRYPTO_SHORTLIST_SIZE = 12       # wie viele Krypto-Kandidaten nach dem Vorfilter tief analysiert werden
+# Etablierte Coins mit mehrjaehriger Historie -- bewusst keine sehr neuen Token, sonst
+# waere die Historie zu kurz fuer eine aussagekraeftige Auswertung.
+CRYPTO_UNIVERSE = [
+    "bitcoin", "ethereum", "litecoin", "ripple", "cardano", "polkadot", "chainlink",
+    "stellar", "dogecoin", "monero", "tron", "eos", "tezos", "cosmos", "vechain",
+    "algorand", "aave", "uniswap", "maker", "the-graph", "solana", "avalanche-2",
+]
 
-DISCOVERY_EXCLUDE = {
-    "tether", "usd-coin", "binance-usd", "dai", "true-usd", "usdd", "frax",
-    "first-digital-usd", "paypal-usd", "ethena-usde", "usual-usd", "gemini-dollar",
-    "pax-dollar", "fdusd", "terrausd", "stasis-eurs", "wrapped-steth", "weth",
-    "staked-ether", "wrapped-bitcoin", "coinbase-wrapped-btc", "wrapped-eeth",
+# CoinGecko-Demo-Plan liefert laut CoinGecko explizit "one year of daily and hourly
+# historical data" -- 365 ist der sichere Rueckfall-Wert fuer Coins, die nicht bei
+# Binance gelistet sind (siehe BINANCE_SYMBOL_MAP unten fuer die Haupt-Historienquelle).
+MAX_HISTORY_DAYS = 365
+WARMUP_DAYS = 150         # Mindesthistorie, bevor die volle Engine ueberhaupt bewertet wird
+EVAL_STRIDE = 3           # nur jeden 3. Tag auswerten -- Signale aendern sich nicht stuendlich,
+                           # spart ~3x Rechenzeit ohne die Aussagekraft nennenswert zu verringern
+RANDOM_SEED = 42          # fuer reproduzierbare Baseline-Vergleiche
+
+# Binances oeffentliche Klines-API: komplett schluessellos, liefert fuer die meisten
+# grossen Coins mehrere Jahre taegliche Historie -- im Gegensatz zum CoinGecko-Demo-Plan,
+# der nur ein Jahr hergibt. Deckt aber nur Coins ab, die bei Binance gegen USDT gelistet
+# sind, deshalb als ERGAENZUNG eingebaut, nicht als Ersatz: wo verfuegbar, mehr Historie;
+# sonst automatischer Ruckfall auf CoinGecko (weiterhin auf MAX_HISTORY_DAYS begrenzt).
+#
+# Technischer Hinweis: Binance quotiert in USDT, nicht EUR. Fuer RSI/MACD/Bollinger und
+# Rendite in Prozent ist das praktisch ohne Belang -- das sind relative Kennzahlen, und
+# die EUR/USD-Wechselkursschwankung faellt gegenueber der krypto-eigenen Volatilitaet
+# kaum ins Gewicht.
+BINANCE_SYMBOL_MAP = {
+    "bitcoin": "BTCUSDT", "ethereum": "ETHUSDT", "litecoin": "LTCUSDT",
+    "ripple": "XRPUSDT", "cardano": "ADAUSDT", "polkadot": "DOTUSDT",
+    "chainlink": "LINKUSDT", "stellar": "XLMUSDT", "dogecoin": "DOGEUSDT",
+    "monero": "XMRUSDT", "tron": "TRXUSDT", "eos": "EOSUSDT",
+    "tezos": "XTZUSDT", "cosmos": "ATOMUSDT", "vechain": "VETUSDT",
+    "algorand": "ALGOUSDT", "aave": "AAVEUSDT", "uniswap": "UNIUSDT",
+    "maker": "MKRUSDT", "the-graph": "GRTUSDT", "solana": "SOLUSDT",
+    "avalanche-2": "AVAXUSDT",
 }
+MAX_HISTORY_DAYS_BINANCE = 1000  # Binance liefert bis zu 1000 Kerzen pro Anfrage, keine Paginierung noetig
 
 
-def load_config():
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
-
-
-# ===================== KRYPTO-VORFILTER (portiert aus der App-Logik) =====================
-
-def rel_strength_score_simple(rs):
-    if rs is None:
-        return 0
-    if rs > 10:
-        return 2
-    if rs > 3:
-        return 1
-    if rs < -10:
-        return -2
-    if rs < -3:
-        return -1
-    return 0
-
-
-def crypto_prefilter_score(coin, btc_chg30d):
-    """Günstiger Vorfilter aus einem einzigen /coins/markets-Aufruf (keine Historie nötig) --
-    entscheidet nur, welche ~12 Coins die teure volle Analyse bekommen. Dieselbe Logik wie
-    discoveryPrefilterScore() in der App."""
-    c24 = coin.get("price_change_percentage_24h_in_currency")
-    c7 = coin.get("price_change_percentage_7d_in_currency")
-    c30 = coin.get("price_change_percentage_30d_in_currency")
-
-    mom = 0
-    if c7 is not None and c30 is not None:
-        if c7 > 0 and c30 > 0 and c24 is not None and c24 > 0:
-            mom = 2
-        elif c7 > 0 and c30 > 0:
-            mom = 1
-        elif c24 is not None and c24 > 0 and c7 < 0 and c30 < 0:
-            mom = 1
-        elif c7 < 0 and c30 < 0 and c24 is not None and c24 < 0:
-            mom = -2
-        elif c7 < 0 and c30 < 0:
-            mom = -1
-
-    rel = 0
-    if c30 is not None and btc_chg30d is not None:
-        rel = rel_strength_score_simple(c30 - btc_chg30d)
-
-    turn = 0
-    vol, mcap = coin.get("total_volume"), coin.get("market_cap")
-    if vol and mcap:
-        turnover = vol / mcap
-        if turnover > 0.15:
-            turn = 2
-        elif turnover > 0.08:
-            turn = 1
-        elif turnover < 0.02:
-            turn = -1
-
-    return mom * 0.4 + rel * 0.35 + turn * 0.25
-
-
-def fetch_crypto_universe(size):
-    url = f"https://api.coingecko.com/api/v3/coins/markets"
-    params = coingecko_params({
-        "vs_currency": VS_CURRENCY, "order": "market_cap_desc", "per_page": size, "page": 1,
-        "price_change_percentage": "24h,7d,30d", "sparkline": "false",
-    })
+def fetch_binance_history(coin_id, days=MAX_HISTORY_DAYS_BINANCE):
+    """Schluessellos, mehrjaehrige Historie wo verfuegbar. Gibt ([], []) zurueck, wenn der
+    Coin nicht gemappt ist oder die Anfrage fehlschlaegt -- der Aufrufer faellt dann auf
+    CoinGecko zurueck, kein Fehler wird nach aussen weitergereicht."""
+    symbol = BINANCE_SYMBOL_MAP.get(coin_id)
+    if not symbol:
+        return [], []
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": symbol, "interval": "1d", "limit": min(days, 1000)}
     try:
         resp = requests.get(url, params=params, timeout=25)
         resp.raise_for_status()
-        return resp.json()
-    except requests.RequestException as e:
-        print(f"Krypto-Marktübersicht fehlgeschlagen: {e}", file=sys.stderr)
-        return []
-
-
-# ===================== GEMINI-BEGRÜNDUNG (rein erklärend, siehe Modulkopf) =====================
-
-def generate_narrative(symbol, name, metrics, fundamentals=None):
-    if not GEMINI_API_KEY:
-        return None
-
-    fund_block = ""
-    if fundamentals:
-        parts = []
-        if fundamentals.get("pe") is not None:
-            parts.append(f"KGV {fundamentals['pe']:.1f}")
-        if fundamentals.get("debt_to_equity") is not None:
-            parts.append(f"Verschuldung/EK {fundamentals['debt_to_equity']:.0f}%")
-        if fundamentals.get("profit_margin") is not None:
-            parts.append(f"Gewinnmarge {fundamentals['profit_margin']*100:.1f}%")
-        if parts:
-            fund_block = "Fundamentaldaten: " + ", ".join(parts) + "\n"
-
-    weekly = "bullisch" if metrics.get("weekly_trend") == "bullish" else ("bärisch" if metrics.get("weekly_trend") == "bearish" else "unklar")
-    rsi_txt = f"{metrics['rsi']:.0f}" if metrics.get("rsi") is not None else "n/a"
-
-    prompt = (
-        "Du bist ein nüchterner Finanzanalyst, kein Verkäufer. Nutze AUSSCHLIESSLICH die "
-        "folgenden bereits berechneten Daten -- erfinde keine zusätzlichen Fakten, "
-        "Nachrichten, Kursziele oder Ereignisse, die hier nicht stehen:\n\n"
-        f"Symbol: {symbol} ({name})\n"
-        f"Technischer Score: {metrics['conviction']}/100 ({metrics['label']})\n"
-        f"RSI(14): {rsi_txt}\n"
-        f"Trendphase: {metrics['phase']}\n"
-        f"Wochentrend: {weekly}\n"
-        f"{fund_block}\n"
-        "Schreibe auf Deutsch in 3-4 Sätzen, warum dieser technische Aufbau aktuell "
-        "interessant ist, und nenne explizit mindestens ein konkretes Risiko oder einen "
-        "Unsicherheitsfaktor. Keine Kursprognose in Euro/Dollar, keine Garantie, keine "
-        "Kaufaufforderung -- beschreibe die Lage, überlasse die Entscheidung."
-    )
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
-    body = {"contents": [{"parts": [{"text": prompt}]}]}
-    try:
-        resp = requests.post(url, headers=headers, json=body, timeout=25)
-        resp.raise_for_status()
         data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (requests.RequestException, KeyError, IndexError, TypeError) as e:
-        print(f"Gemini-Begründung für {symbol} nicht verfügbar: {e}", file=sys.stderr)
-        return None
+        if not isinstance(data, list) or not data:
+            return [], []
+        # Kline-Format: [open_time, open, high, low, close, volume, close_time, ...]
+        closes = [float(k[4]) for k in data]
+        volumes = [float(k[5]) for k in data]
+        return closes, volumes
+    except (requests.RequestException, ValueError, IndexError, TypeError) as e:
+        print(f"  Binance-Historie fuer {coin_id} nicht verfuegbar ({e})", file=sys.stderr)
+        return [], []
 
 
-# ===================== ORCHESTRIERUNG =====================
+def fetch_full_history(coin_id, days=MAX_HISTORY_DAYS, retries=2):
+    binance_closes, binance_volumes = fetch_binance_history(coin_id)
+    if len(binance_closes) >= WARMUP_DAYS:
+        print(f"  {len(binance_closes)} Tage von Binance geladen")
+        return binance_closes, binance_volumes
 
-def scan_stocks(symbols):
-    """Gibt ALLE bewerteten Aktien zurueck, nicht nur die mit Score >= Schwelle --
-    main() leitet daraus sowohl die echten Kandidaten als auch eine garantierte
-    'Aktien im Fokus'-Sektion ab (siehe dort). Aktien schwanken strukturell weniger
-    als Krypto, daher ueberschreiten sie seltener die 65er-Schwelle, obwohl sie
-    fundamental relevant sein koennen -- ohne Garantie-Sektion wuerden sie in einem
-    gemischten Krypto/Aktien-Ranking fast immer untergehen."""
-    all_stocks = []
-    for idx, symbol in enumerate(symbols):
-        print(f"[Aktie {idx+1}/{len(symbols)}] {symbol} ...")
-        closes, volumes, price, chg24h = fetch_stock_history(symbol)
-        if len(closes) < 30 or price is None:
-            print("  zu wenig Daten, übersprungen")
-            time.sleep(1.0)
-            continue
-        metrics = compute_conviction(closes, volumes, price, chg24h, [],
-                                      lookback_periods=STOCK_LOOKBACK_PERIODS,
-                                      weekly_stride=STOCK_WEEKLY_STRIDE)
-        print(f"  Score={metrics['conviction']} ({metrics['label']})")
-        all_stocks.append({"symbol": symbol, "name": symbol, "kind": "Aktie",
-                            "price": price, "metrics": metrics})
-        time.sleep(1.0)
-    return all_stocks
+    print(f"  nicht auf Binance verfuegbar oder zu wenig Historie -- falle zurueck auf CoinGecko")
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+    params = coingecko_params({"vs_currency": VS_CURRENCY, "days": days, "interval": "daily"})
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            closes = [p[1] for p in data.get("prices", [])]
+            volumes = [v[1] for v in data.get("total_volumes", [])]
+            return closes, volumes
+        except requests.RequestException as e:
+            if attempt < retries:
+                time.sleep(3)
+                continue
+            print(f"  Historie fuer {coin_id} fehlgeschlagen: {e}", file=sys.stderr)
+            return [], []
 
 
-def scan_crypto(scan_size):
-    universe = fetch_crypto_universe(scan_size)
-    if not universe:
+def max_drawdown_pct(price_path):
+    """Größter Rückgang vom bisherigen Höchststand innerhalb einer Preisreihe, in Prozent
+    (negativ oder 0). Nutzt die tatsächlichen Tagesschlusskurse zwischen Einstieg und
+    Ausstieg -- nicht nur die EVAL_STRIDE-Stichprobenpunkte -- damit ein Rücksetzer
+    zwischen zwei Auswertungstagen nicht unsichtbar bleibt. Ohne das würde ein Trade mit
+    +20% Endrendite genauso aussehen wie einer, der unterwegs -50% durchgemacht hat,
+    bevor er sich erholte -- ein entscheidender Unterschied für jeden, der die Position
+    tatsächlich hätte halten müssen."""
+    if not price_path:
+        return 0.0
+    peak = price_path[0]
+    worst = 0.0
+    for p in price_path:
+        if p > peak:
+            peak = p
+        dd = (p - peak) / peak * 100
+        if dd < worst:
+            worst = dd
+    return worst
+
+
+def simulate_coin(coin_id, closes, volumes, benchmark_closes):
+    """Läuft Tag für Tag (im EVAL_STRIDE-Raster) durch die Historie, wendet dieselbe
+    Einstieg/Ausstieg-Zustandsmaschine wie check_signal() in watcher.py an, und
+    protokolliert jeden abgeschlossenen Trade. Streng point-in-time: closes[:i+1]."""
+    trades = []
+    position = None  # None oder {"entry_idx","entry_price"}
+    n = len(closes)
+    is_self_benchmark = (coin_id == "bitcoin")  # siehe compute_conviction: BTC braucht sich nicht selbst als Benchmark-Faktor
+
+    for i in range(WARMUP_DAYS, n, EVAL_STRIDE):
+        window_closes = closes[: i + 1]
+        window_volumes = volumes[: i + 1] if volumes else []
+        window_bench = benchmark_closes[: i + 1] if benchmark_closes else []
+        price = closes[i]
+        chg24h = ((closes[i] / closes[i - 1]) - 1) * 100 if i > 0 else None
+
+        metrics = compute_conviction(window_closes, window_volumes, price, chg24h, window_bench,
+                                      is_self_benchmark=is_self_benchmark)
+        score = metrics["conviction"]
+
+        if position is None and score >= ENTRY_SCORE:
+            position = {
+                "entry_idx": i, "entry_price": price,
+                # Teilwerte beim Einstieg -- fuer analyze_backtest.py (Korrelationsanalyse,
+                # welcher Faktor tatsaechlich mit dem Ergebnis zusammenhaengt)
+                "entry_t": metrics["t"], "entry_m": metrics["m"], "entry_v": metrics["v"],
+                "entry_r": metrics["r"], "entry_vo": metrics["vo"],
+            }
+        elif position is not None and score < EXIT_SCORE:
+            trades.append({
+                "coin": coin_id,
+                "entry_idx": position["entry_idx"], "entry_price": position["entry_price"],
+                "exit_idx": i, "exit_price": price,
+                "return_pct": (price / position["entry_price"] - 1) * 100,
+                "holding_days": i - position["entry_idx"],
+                "closed_at_end": False,
+                "entry_t": position["entry_t"], "entry_m": position["entry_m"],
+                "entry_v": position["entry_v"], "entry_r": position["entry_r"],
+                "entry_vo": position["entry_vo"],
+                "max_drawdown_pct": max_drawdown_pct(closes[position["entry_idx"]: i + 1]),
+            })
+            position = None
+
+    # offene Position am Ende der Historie sauber abschliessen, aber separat markiert --
+    # zaehlt nicht in die "echte" Trefferquote, weil kein echtes Ausstiegssignal vorlag.
+    if position is not None:
+        trades.append({
+            "coin": coin_id,
+            "entry_idx": position["entry_idx"], "entry_price": position["entry_price"],
+            "exit_idx": n - 1, "exit_price": closes[-1],
+            "return_pct": (closes[-1] / position["entry_price"] - 1) * 100,
+            "holding_days": (n - 1) - position["entry_idx"],
+            "closed_at_end": True,
+            "entry_t": position["entry_t"], "entry_m": position["entry_m"],
+            "entry_v": position["entry_v"], "entry_r": position["entry_r"],
+            "entry_vo": position["entry_vo"],
+            "max_drawdown_pct": max_drawdown_pct(closes[position["entry_idx"]:]),
+        })
+
+    return trades
+
+
+def random_baseline(closes, n_entries, holding_days_pool, rng):
+    """Fairer Vergleichsmassstab: dieselbe Anzahl Trades, dieselbe Verteilung der
+    Haltedauer, aber zufaellige statt signalbasierte Einstiegszeitpunkte. Schlaegt die
+    Engine das, oder haette man genauso gut wuerfeln koennen?"""
+    if not closes or n_entries == 0:
         return []
-    btc_row = next((c for c in universe if c["id"] == "bitcoin"), None)
-    btc_chg30d = btc_row.get("price_change_percentage_30d_in_currency") if btc_row else None
-
-    ranked = sorted(
-        (c for c in universe if c["id"] not in DISCOVERY_EXCLUDE),
-        key=lambda c: crypto_prefilter_score(c, btc_chg30d),
-        reverse=True,
-    )
-    shortlist = ranked[:CRYPTO_SHORTLIST_SIZE]
-
-    btc_closes, _ = fetch_crypto_history("bitcoin")
-    time.sleep(1.0)
-
-    candidates = []
-    for idx, coin in enumerate(shortlist):
-        coin_id = coin["id"]
-        print(f"[Krypto {idx+1}/{len(shortlist)}] {coin_id} ...")
-        closes, volumes = fetch_crypto_history(coin_id)
-        if len(closes) < 30:
-            print("  zu wenig Historie, übersprungen")
-            time.sleep(1.0)
+    n = len(closes)
+    results = []
+    for _ in range(n_entries):
+        hold = rng.choice(holding_days_pool) if holding_days_pool else 30
+        max_start = n - hold - 1
+        if max_start <= WARMUP_DAYS:
             continue
-        is_self = (coin_id == "bitcoin")
-        metrics = compute_conviction(closes, volumes, coin["current_price"],
-                                      coin.get("price_change_percentage_24h_in_currency"),
-                                      btc_closes, is_self_benchmark=is_self)
-        print(f"  Score={metrics['conviction']} ({metrics['label']})")
-        if metrics["conviction"] >= BRIEFING_MIN_SCORE:
-            candidates.append({"symbol": coin["symbol"].upper(), "name": coin["name"], "kind": "Krypto",
-                                "price": coin["current_price"], "metrics": metrics})
-        time.sleep(1.0)
-    return candidates
+        start = rng.randint(WARMUP_DAYS, max_start)
+        end = start + hold
+        results.append((closes[end] / closes[start] - 1) * 100)
+    return results
+
+
+def summarize(trades, label):
+    closed = [t for t in trades if not t["closed_at_end"]]
+    returns = [t["return_pct"] for t in closed]
+    wins = [r for r in returns if r > 0]
+    holding = [t["holding_days"] for t in closed]
+    drawdowns = [t["max_drawdown_pct"] for t in closed if t.get("max_drawdown_pct") is not None]
+
+    if not returns:
+        return {"label": label, "n": 0}
+
+    stdev = statistics.stdev(returns) if len(returns) > 1 else 0
+    avg_return = statistics.mean(returns)
+
+    return {
+        "label": label,
+        "n": len(returns),
+        "win_rate": (len(wins) / len(returns)) * 100,
+        "avg_return": avg_return,
+        "median_return": statistics.median(returns),
+        "best": max(returns),
+        "worst": min(returns),
+        "stdev": stdev,
+        "avg_holding_days": statistics.mean(holding) if holding else 0,
+        # Risiko-Kennzahlen (Damodaran-Review): eine Endrendite allein sagt nichts darüber,
+        # wie holprig der Weg dorthin war, und nichts über Rendite im Verhältnis zum Risiko.
+        "avg_max_drawdown": statistics.mean(drawdowns) if drawdowns else None,
+        "worst_max_drawdown": min(drawdowns) if drawdowns else None,
+        "return_to_risk": (avg_return / stdev) if stdev > 0 else None,
+    }
+
+
+def buy_and_hold_return(closes):
+    if len(closes) < 2:
+        return None
+    return (closes[-1] / closes[WARMUP_DAYS] - 1) * 100 if len(closes) > WARMUP_DAYS else None
+
+
+def btc_matched_return(btc_closes, coin_closes):
+    """Bitcoins Buy-and-Hold-Rendite ueber DIESELBE ANZAHL Perioden wie der Coin, ausgerichtet
+    vom jeweils letzten (aktuellsten) Datenpunkt beider Reihen aus -- fuer einen fairen
+    'Alt vs. BTC im selben Fenster'-Vergleich, auch wenn Coins unterschiedlich lange
+    Historie bei CoinGecko haben."""
+    span = len(coin_closes) - WARMUP_DAYS
+    if span <= 0 or len(btc_closes) <= span:
+        return None
+    return (btc_closes[-1] / btc_closes[-(span + 1)] - 1) * 100
 
 
 def main():
-    config = load_config()
-    stock_symbols = config.get("briefing_stocks") or []
-    crypto_scan_size = config.get("briefing_crypto_scan_size", 100)
+    print(f"Backtest ueber {len(CRYPTO_UNIVERSE)} Coins, bis zu {MAX_HISTORY_DAYS_BINANCE} Tage Historie "
+          f"(Binance, wo gelistet) bzw. {MAX_HISTORY_DAYS} Tage (CoinGecko-Ruckfall), "
+          f"Auswertung alle {EVAL_STRIDE} Tage. Das dauert eine Weile.\n")
 
-    print(f"Durchsuche {len(stock_symbols)} Aktien und Top-{crypto_scan_size} Krypto nach Marktkapitalisierung.\n")
+    rng = random.Random(RANDOM_SEED)
 
-    all_stocks = scan_stocks(stock_symbols)
-    stock_candidates = [c for c in all_stocks if c["metrics"]["conviction"] >= BRIEFING_MIN_SCORE]
-    stock_focus = sorted(all_stocks, key=lambda c: c["metrics"]["conviction"], reverse=True)[:STOCK_FOCUS_COUNT]
-    # bereits qualifizierende Aktien nicht doppelt in der Fokus-Sektion zeigen -- die stehen
-    # schon prominent in der Hauptliste
-    stock_focus_only = [c for c in stock_focus if c["metrics"]["conviction"] < BRIEFING_MIN_SCORE]
+    print("Lade Bitcoin-Historie als Benchmark...")
+    btc_closes, _ = fetch_full_history("bitcoin")
+    if not btc_closes:
+        print("Konnte Bitcoin-Historie nicht laden -- Abbruch.", file=sys.stderr)
+        sys.exit(1)
+    time.sleep(1.5)
 
-    crypto_candidates = scan_crypto(crypto_scan_size)
-    all_candidates = sorted(stock_candidates + crypto_candidates,
-                             key=lambda c: c["metrics"]["conviction"], reverse=True)
-    top = all_candidates[:BRIEFING_MAX_RESULTS]
+    all_trades = []
+    buy_hold_returns = []
+    per_coin_results = []
+    closes_by_coin = {}   # fuer die Zufalls-Baseline weiterverwendet, kein erneuter Netzabruf noetig
 
-    lines = [f"# Signalstation Briefing\n", f"{len(top)} Kandidat(en) mit Score ≥ {BRIEFING_MIN_SCORE} "
-             f"aus {len(stock_symbols)} Aktien und Top-{crypto_scan_size} Krypto.\n"]
-    json_candidates = []  # strukturierte Fassung fuer briefing.json -- das liest die App direkt,
-                           # ohne Markdown parsen zu muessen (siehe "Elon-Review": ein Ort statt vier)
+    for idx, coin_id in enumerate(CRYPTO_UNIVERSE):
+        print(f"[{idx+1}/{len(CRYPTO_UNIVERSE)}] {coin_id} ...")
+        closes, volumes = fetch_full_history(coin_id)
+        if len(closes) < WARMUP_DAYS + EVAL_STRIDE:
+            print(f"  zu wenig Historie ({len(closes)} Tage), uebersprungen")
+            time.sleep(1.5)
+            continue
 
-    if not top:
-        lines.append("Aktuell kein Titel über der Kaufsignal-Schwelle. Der Markt ändert sich laufend -- "
-                      "das nächste Briefing kommt in wenigen Stunden.\n")
+        bench = btc_closes if coin_id != "bitcoin" else closes  # BTC braucht sich nicht selbst als Benchmark
+        trades = simulate_coin(coin_id, closes, volumes, bench)
+        all_trades.extend(trades)
+        closes_by_coin[coin_id] = closes
+
+        bh = buy_and_hold_return(closes)
+        if bh is not None:
+            buy_hold_returns.append(bh)
+        btc_matched = btc_matched_return(btc_closes, closes) if coin_id != "bitcoin" else None
+        beats_btc = (bh is not None and btc_matched is not None and bh > btc_matched)
+
+        closed = [t for t in trades if not t["closed_at_end"]]
+        bh_txt = f"{bh:+.1f}%" if bh is not None else "n/a"
+        print(f"  {len(closed)} abgeschlossene Trades, Buy-and-Hold ueber denselben Zeitraum: {bh_txt}")
+
+        per_coin_results.append({
+            "coin": coin_id, "trades": len(closed), "buy_hold_pct": bh,
+            "btc_matched_pct": btc_matched, "beats_btc": beats_btc,
+        })
+        time.sleep(1.5)  # CoinGecko-Rate-Limit schonen
+
+    engine_summary = summarize(all_trades, "Signalstation-Engine (echte Einstieg/Ausstieg-Signale)")
+
+    # Zufalls-Baseline: gleiche Anzahl Trades PRO COIN wie die Engine tatsaechlich gemacht hat,
+    # gleiche Haltedauer-Verteilung, aber zufaellige statt signalbasierte Einstiegszeitpunkte --
+    # auf denselben, bereits geladenen Kursreihen, kein erneuter Netzabruf.
+    holding_pool = [t["holding_days"] for t in all_trades if not t["closed_at_end"]] or [30]
+    baseline_returns = []
+    trades_per_coin = {}
+    for t in all_trades:
+        if not t["closed_at_end"]:
+            trades_per_coin[t["coin"]] = trades_per_coin.get(t["coin"], 0) + 1
+    for coin_id, n_trades in trades_per_coin.items():
+        coin_closes = closes_by_coin.get(coin_id)
+        if not coin_closes or n_trades == 0:
+            continue
+        baseline_returns.extend(random_baseline(coin_closes, n_trades, holding_pool, rng))
+
+    baseline_summary = None
+    if baseline_returns:
+        baseline_wins = [r for r in baseline_returns if r > 0]
+        baseline_summary = {
+            "n": len(baseline_returns),
+            "win_rate": (len(baseline_wins) / len(baseline_returns)) * 100,
+            "avg_return": statistics.mean(baseline_returns),
+            "median_return": statistics.median(baseline_returns),
+        }
+
+    report_lines = []
+    report_lines.append("# Signalstation Backtest-Report\n")
+    report_lines.append(f"Universum: {len(CRYPTO_UNIVERSE)} Coins · Historie bis {MAX_HISTORY_DAYS_BINANCE} Tage "
+                         f"(Binance, wo gelistet) bzw. {MAX_HISTORY_DAYS} Tage (CoinGecko-Rückfall) · "
+                         f"Auswertungsraster alle {EVAL_STRIDE} Tage · Schwellen 65 (Einstieg) / 40 (Ausstieg)\n")
+
+    report_lines.append("## Ergebnis: Signalstation-Engine\n")
+    if engine_summary["n"] == 0:
+        report_lines.append("Keine abgeschlossenen Trades im Beobachtungszeitraum.\n")
     else:
-        for i, c in enumerate(top):
-            m = c["metrics"]
-            currency_symbol = "$" if c["kind"] == "Aktie" else ("€" if VS_CURRENCY == "eur" else VS_CURRENCY.upper() + " ")
-            fundamentals = fetch_stock_fundamentals(c["symbol"]) if c["kind"] == "Aktie" else None
-            narrative = None
-            if i < BRIEFING_MAX_NARRATIVES:
-                narrative = generate_narrative(c["symbol"], c["name"], m, fundamentals)
+        report_lines.append(f"- Abgeschlossene Trades: **{engine_summary['n']}**")
+        report_lines.append(f"- Trefferquote: **{engine_summary['win_rate']:.1f}%**")
+        report_lines.append(f"- Ø Rendite pro Trade: **{engine_summary['avg_return']:+.1f}%**")
+        report_lines.append(f"- Median-Rendite: {engine_summary['median_return']:+.1f}%")
+        report_lines.append(f"- Beste / schlechteste Trade: {engine_summary['best']:+.1f}% / {engine_summary['worst']:+.1f}%")
+        report_lines.append(f"- Streuung (Stdev): {engine_summary['stdev']:.1f} Prozentpunkte")
+        report_lines.append(f"- Ø Haltedauer: {engine_summary['avg_holding_days']:.0f} Tage")
+        if engine_summary["avg_max_drawdown"] is not None:
+            report_lines.append(
+                f"- **Ø maximaler Rücksetzer während der Position: {engine_summary['avg_max_drawdown']:.1f}%** "
+                f"(schlechtester Einzelfall: {engine_summary['worst_max_drawdown']:.1f}%)"
+            )
+            report_lines.append(
+                "  Das ist der schlimmste Zwischenstand *während* der Position, nicht die Endrendite — "
+                "zeigt, wie holprig der Weg dorthin tatsächlich war, selbst wenn der Trade am Ende gewann."
+            )
+        if engine_summary["return_to_risk"] is not None:
+            report_lines.append(
+                f"- **Rendite-Risiko-Verhältnis (Ø Rendite / Streuung): {engine_summary['return_to_risk']:.2f}**"
+            )
+            report_lines.append(
+                "  Grobe Orientierung, kein echter Sharpe-Ratio (dafür fehlt ein risikofreier Zins und "
+                "eine gleichmäßige Zeitbasis) — aber besser als die Durchschnittsrendite allein zu lesen, "
+                "ohne zu wissen, wie stark sie streut."
+            )
+        report_lines.append("")
 
-            lines.append(f"## {c['symbol']} ({c['kind']}) — Score {m['conviction']}/100, {m['label']}\n")
-            lines.append(f"Preis: {fmt_price(c['price'], currency_symbol)} · {m['phase']}"
-                         + (f" · RSI {m['rsi']:.0f}" if m.get("rsi") is not None else ""))
-            if fundamentals and fundamentals.get("pe") is not None:
-                lines.append(f"KGV: {fundamentals['pe']:.1f}"
-                             + (f" · Verschuldung/EK: {fundamentals['debt_to_equity']:.0f}%" if fundamentals.get("debt_to_equity") is not None else ""))
-            if narrative:
-                lines.append(f"\n{narrative}\n")
-            else:
-                lines.append("\n(Kein Gemini-Kontext verfügbar oder GEMINI_API_KEY nicht gesetzt -- reine Kennzahlen oben.)\n")
+    report_lines.append("## Vergleich: zufällige Einstiegszeitpunkte (Baseline)\n")
+    report_lines.append(
+        "Dieselbe Anzahl Trades pro Coin, dieselbe Haltedauer-Verteilung wie oben, aber zufällig "
+        "statt signalbasiert gewählte Einstiege. Schlägt die Engine den Zufall überhaupt?\n"
+    )
+    if baseline_summary:
+        report_lines.append(f"- Zufalls-Trades: **{baseline_summary['n']}**")
+        report_lines.append(f"- Zufalls-Trefferquote: **{baseline_summary['win_rate']:.1f}%**")
+        report_lines.append(f"- Ø Zufalls-Rendite: **{baseline_summary['avg_return']:+.1f}%**")
+        if engine_summary["n"] > 0:
+            edge = engine_summary["avg_return"] - baseline_summary["avg_return"]
+            report_lines.append(f"\n**Vorsprung der Engine ggü. Zufall: {edge:+.1f} Prozentpunkte pro Trade.**")
+            if edge <= 0:
+                report_lines.append(
+                    "\n⚠️ Kein positiver Vorsprung gegenüber zufälligen Einstiegen in diesem Lauf — "
+                    "das ist ein ernstzunehmendes Signal, dass die aktuelle Schwelle/Gewichtung in "
+                    "diesem Zeitraum keinen nachweisbaren Mehrwert gegenüber Zufall hatte."
+                )
+        report_lines.append("")
+    else:
+        report_lines.append("Keine Baseline-Daten verfügbar.\n")
 
-            json_candidates.append({
-                "symbol": c["symbol"], "name": c["name"], "kind": c["kind"],
-                "price": c["price"], "currency": currency_symbol,
-                "conviction": m["conviction"], "label": m["label"], "cls": m["cls"],
-                "rsi": m.get("rsi"), "phase": m.get("phase"), "weekly_trend": m.get("weekly_trend"),
-                "fundamentals": fundamentals, "narrative": narrative,
-            })
+    report_lines.append("## Vergleich: Buy-and-Hold pro Coin\n")
+    report_lines.append("| Coin | Abgeschl. Trades | Buy-and-Hold (gesamter Zeitraum) |")
+    report_lines.append("|---|---|---|")
+    for r in per_coin_results:
+        bh_txt = f"{r['buy_hold_pct']:+.1f}%" if r["buy_hold_pct"] is not None else "n/a"
+        report_lines.append(f"| {r['coin']} | {r['trades']} | {bh_txt} |")
+    if buy_hold_returns:
+        report_lines.append(f"\nØ Buy-and-Hold über alle Coins: **{statistics.mean(buy_hold_returns):+.1f}%**\n")
 
-    # Garantierte Sichtbarkeit fuer Aktien, unabhaengig von der 65er-Schwelle -- siehe
-    # STOCK_FOCUS_COUNT oben. Kein Kaufsignal, nur "das ist aktuell am staerksten unter
-    # den beobachteten Aktien", klar als solches benannt, keine Verwaesserung von
-    # "Kaufsignal" als Begriff.
-    json_stock_focus = []
-    if stock_focus_only:
-        lines.append("\n## Aktien im Fokus (unabhängig von der Kaufsignal-Schwelle)\n")
-        lines.append(
-            f"Aktien schwanken strukturell weniger als Krypto und überschreiten die "
-            f"{BRIEFING_MIN_SCORE}er-Schwelle seltener — diese {len(stock_focus_only)} "
-            f"waren aktuell die stärksten unter den {len(stock_symbols)} beobachteten, "
-            f"auch wenn (noch) kein Kaufsignal vorliegt.\n"
-        )
-        for c in stock_focus_only:
-            m = c["metrics"]
-            fundamentals = fetch_stock_fundamentals(c["symbol"])
-            lines.append(f"- **{c['symbol']}** — Score {m['conviction']}/100, {m['label']} · "
-                         f"{fmt_price(c['price'], '$')} · {m['phase']}"
-                         + (f" · RSI {m['rsi']:.0f}" if m.get("rsi") is not None else ""))
-            json_stock_focus.append({
-                "symbol": c["symbol"], "name": c["name"], "price": c["price"], "currency": "$",
-                "conviction": m["conviction"], "label": m["label"], "cls": m["cls"],
-                "rsi": m.get("rsi"), "phase": m.get("phase"), "fundamentals": fundamentals,
-            })
+    report_lines.append("\n## Alts vs. Bitcoin\n")
+    report_lines.append(
+        "Direkter Test der Bitcoin-Maximalisten-These (\"Altcoins bluten strukturell gegen "
+        "Bitcoin, nicht nur zufällig\"): wie viele der Altcoins hätten über exakt denselben "
+        "Zeitraum eine reine Bitcoin-Position geschlagen — nicht in Dollar, sondern relativ "
+        "zu BTC selbst?\n"
+    )
+    alt_results = [r for r in per_coin_results if r["coin"] != "bitcoin" and r["btc_matched_pct"] is not None]
+    if alt_results:
+        beat_count = sum(1 for r in alt_results if r["beats_btc"])
+        report_lines.append(f"- Altcoins mit Daten für den Vergleich: **{len(alt_results)}**")
+        report_lines.append(f"- Davon besser als Bitcoin im selben Fenster: **{beat_count} von {len(alt_results)}** "
+                             f"({(beat_count/len(alt_results)*100):.0f}%)")
+        report_lines.append("\n| Coin | Buy-and-Hold | Bitcoin im selben Fenster | Alt schlägt BTC? |")
+        report_lines.append("|---|---|---|---|")
+        for r in sorted(alt_results, key=lambda x: x["buy_hold_pct"] - x["btc_matched_pct"], reverse=True):
+            diff_txt = "✅ ja" if r["beats_btc"] else "❌ nein"
+            report_lines.append(
+                f"| {r['coin']} | {r['buy_hold_pct']:+.1f}% | {r['btc_matched_pct']:+.1f}% | {diff_txt} |"
+            )
+        report_lines.append("")
+    else:
+        report_lines.append("Keine Daten für den Alts-vs-BTC-Vergleich verfügbar.\n")
 
-    lines.append(
-        "\n---\nKeine Anlageberatung. Alle Angaben basieren auf dem regelbasierten "
-        "Signalstation-Score plus optionalem, ausdrücklich als solchem markiertem "
-        "Gemini-Kontext -- keine Garantie, keine Kursprognose. Eigene Prüfung nötig."
+    report_lines.append("\n## Wichtige Einschränkungen dieses Backtests\n")
+    report_lines.append(
+        "- Keine Gebühren, kein Slippage, keine Steuer -- reale Ergebnisse wären schlechter.\n"
+        "- CoinGecko liefert je nach Coin unterschiedlich lange Historie; nicht alle Coins decken "
+        "den vollen Zeitraum ab.\n"
+        "- Ein Auswertungsraster von alle 3 Tagen ist ein Kompromiss, kein exaktes Live-Verhalten.\n"
+        "- Die Schwellen 65/40 und die Gewichtung 25/20/15/25/15% wurden NICHT anhand dieses "
+        "Backtests optimiert (das wäre Overfitting auf die Testdaten selbst) -- dieser Lauf prüft "
+        "die bereits feststehenden Werte, ändert sie nicht automatisch.\n"
+        "- Ein einzelner Lauf über ein bestimmtes Zeitfenster ist immer noch nur eine Stichprobe "
+        "der Marktgeschichte, kein Beweis für die Zukunft."
     )
 
-    report = "\n".join(lines)
-    (Path(__file__).parent / "BRIEFING.md").write_text(report, encoding="utf-8")
+    report = "\n".join(report_lines)
+    out_path = Path(__file__).parent / "REPORT.md"
+    out_path.write_text(report, encoding="utf-8")
 
-    briefing_json = {
+    # Rohdaten zusätzlich als JSON, falls jemand selbst weiterrechnen will
+    (Path(__file__).parent / "backtest_trades.json").write_text(
+        json.dumps(all_trades, indent=2), encoding="utf-8"
+    )
+
+    # Kompakte Zusammenfassung fuer die App (Track-Record-Anzeige) -- siehe Elon-Review:
+    # ein oeffentlich pruefbarer Trackrecord direkt in der App statt versteckt in einem Repo.
+    summary_json = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "universe_size": {"stocks": len(stock_symbols), "crypto_scanned": crypto_scan_size},
-        "min_score": BRIEFING_MIN_SCORE,
-        "candidates": json_candidates,
-        "stock_focus": json_stock_focus,  # garantierte Aktien-Sichtbarkeit, siehe oben
+        "universe_size": len(CRYPTO_UNIVERSE),
+        "max_history_days": MAX_HISTORY_DAYS,
+        "engine": engine_summary if engine_summary.get("n", 0) > 0 else None,
+        "baseline_random": baseline_summary,
+        "avg_buy_and_hold": statistics.mean(buy_hold_returns) if buy_hold_returns else None,
     }
-    (Path(__file__).parent / "briefing.json").write_text(
-        json.dumps(briefing_json, indent=2, ensure_ascii=False), encoding="utf-8"
+    (Path(__file__).parent / "backtest_summary.json").write_text(
+        json.dumps(summary_json, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    if top or stock_focus_only:
-        parts = []
-        if top:
-            parts.append(" · ".join(f"{c['symbol']} ({c['metrics']['conviction']})" for c in top))
-        if stock_focus_only:
-            focus_txt = " · ".join(f"{c['symbol']} ({c['metrics']['conviction']})" for c in stock_focus_only)
-            parts.append(f"📈 Aktien im Fokus: {focus_txt}")
-        summary = "\n".join(parts)
-        send_push(f"📋 Briefing: {len(top)} Kandidat(en)", summary, priority="default", tags=["clipboard"])
-    else:
-        print("Kein Kandidat über der Schwelle -- kein Push versendet, um nicht grundlos zu stören.")
-
-    print(f"\nBRIEFING.md + briefing.json geschrieben mit {len(top)} Kandidat(en) "
-          f"+ {len(stock_focus_only)} Aktien im Fokus.")
+    print(f"\nFertig. Report geschrieben nach {out_path}")
+    print(report)
 
 
 if __name__ == "__main__":
