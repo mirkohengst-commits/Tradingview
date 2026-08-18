@@ -1,6 +1,6 @@
 {
   "crypto:bitcoin": {
-    "signal_position": "none"
+    "signal_position": "entered"
   },
   "crypto:chainlink": {
     "signal_position": "entered"
