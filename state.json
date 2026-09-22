@@ -6,7 +6,7 @@
     "signal_position": "entered"
   },
   "crypto:litecoin": {
-    "signal_position": "none"
+    "signal_position": "entered"
   },
   "crypto:polkadot": {
     "signal_position": "entered"
