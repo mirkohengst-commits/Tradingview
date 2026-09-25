@@ -12,7 +12,7 @@
     "signal_position": "entered"
   },
   "crypto:polygon-ecosystem-token": {
-    "signal_position": "entered"
+    "signal_position": "none"
   },
   "stock:AMAT": {
     "signal_position": "none"
