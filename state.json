@@ -3,7 +3,7 @@
     "signal_position": "none"
   },
   "crypto:chainlink": {
-    "signal_position": "entered"
+    "signal_position": "none"
   },
   "crypto:litecoin": {
     "signal_position": "entered"
