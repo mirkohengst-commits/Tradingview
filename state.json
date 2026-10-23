@@ -9,7 +9,7 @@
     "signal_position": "entered"
   },
   "crypto:polkadot": {
-    "signal_position": "entered"
+    "signal_position": "none"
   },
   "crypto:polygon-ecosystem-token": {
     "signal_position": "none"
